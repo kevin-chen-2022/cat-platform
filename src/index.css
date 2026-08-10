@@ -1,0 +1,519 @@
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+*, *::before, *::after {
+  box-sizing: inherit;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.rc-dock-layout {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.rc-dock-tab-pane > div > div {
+  overflow: auto;
+}
+
+/* 隐藏所有 Tab 面板内部的标题栏和状态栏 */
+.cat-headers-hidden .panel-header,
+.cat-headers-hidden .panel-footer {
+  display: none !important;
+}
+
+/* 极简模式（禅模式）：隐藏所有 panel 边框、tab 栏、分隔条、面板头尾，只保留内容区 */
+/* 通过 rc-dock 原生 CSS class 系统控制，再次点击复选框取消 class 即恢复正常显示 */
+.cat-zen-mode .dock-panel {
+  border: none !important;
+}
+.cat-zen-mode .dock-panel > .dock > .dock-bar {
+  display: none !important;
+}
+.cat-zen-mode .dock-divider {
+  display: none !important;
+}
+.cat-zen-mode .panel-header,
+.cat-zen-mode .panel-footer {
+  display: none !important;
+}
+
+/* 活动 Tab 标题栏竖排：窄标题栏 + 竖排文字，节省空间 */
+.dock-panel.cat-tabbar-vertical > .dock {
+  flex-direction: row !important;
+}
+.dock-panel.cat-tabbar-vertical > .dock > .dock-bar {
+  display: flex !important;
+  flex-direction: column !important;
+  width: 36px !important;
+  min-width: 36px !important;
+  height: 100% !important;
+  border-bottom: none !important;
+  border-right: 1px solid #f3f3f3 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  flex: 0 0 36px !important;
+  white-space: normal !important;
+}
+.dock-panel.cat-tabbar-vertical > .dock > .dock-bar > .dock-nav {
+  flex-direction: column !important;
+  height: 100% !important;
+  width: 100% !important;
+  flex: 1 1 auto !important;
+}
+.dock-panel.cat-tabbar-vertical > .dock > .dock-bar > .dock-nav > .dock-nav-wrap {
+  flex-direction: column !important;
+  height: 100% !important;
+  white-space: normal !important;
+  flex: 1 1 auto !important;
+  overflow: hidden !important;
+}
+.dock-panel.cat-tabbar-vertical > .dock > .dock-bar > .dock-nav > .dock-nav-wrap > .dock-nav-list {
+  flex-direction: column !important;
+  width: 100% !important;
+}
+.dock-panel.cat-tabbar-vertical > .dock > .dock-bar .dock-tab {
+  float: none !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: auto !important;
+  margin-right: 0 !important;
+  border-bottom: 1px solid #ddd !important;
+  border-right: 3px solid transparent !important;
+  text-align: center !important;
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+}
+.dock-panel.cat-tabbar-vertical > .dock > .dock-bar .dock-tab > div {
+  padding: 6px 2px !important;
+  writing-mode: vertical-rl !important;
+  text-orientation: upright !important;
+  letter-spacing: 1px !important;
+  line-height: 1.4 !important;
+}
+.dock-panel.cat-tabbar-vertical > .dock > .dock-bar .dock-tab .dock-tab-close-btn {
+  top: 2px !important;
+  right: 2px !important;
+}
+.dock-panel.cat-tabbar-vertical > .dock > .dock-bar .dock-tab-active {
+  border-right-color: #108ee9 !important;
+}
+.dock-panel.cat-tabbar-vertical > .dock > .dock-bar .dock-ink-bar {
+  display: none !important;
+}
+/* 竖排模式下禁用 rc-tabs 的横向滚动逻辑（tabPosition 仍是 top，但 tab 实际竖排）
+   scrollToTab 会误判并给 nav-list 加 translate，导致 tab 移出可视区域 */
+.dock-panel.cat-tabbar-vertical > .dock > .dock-bar .dock-nav-list {
+  transform: none !important;
+}
+/* 竖排模式下隐藏 "..." 更多按钮（OperationNode），所有 tab 直接竖排显示 */
+.dock-panel.cat-tabbar-vertical > .dock > .dock-bar .dock-nav-operations {
+  display: none !important;
+}
+.dock-panel.cat-tabbar-vertical > .dock > .dock-content-holder {
+  flex: 1 !important;
+  height: 100% !important;
+}
+
+/* === 图钉按钮（钉住 / 自动隐藏） === */
+/* 放在 .dock-extra-content 中，与最大化按钮并排，不用绝对定位 */
+/* 样式参考 MUI IconButton：24px 方形，hover 时背景变灰 */
+.cat-pin-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(0, 0, 0, 0.54);
+  border-radius: 4px;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+.cat-pin-btn:hover {
+  background-color: rgba(0, 0, 0, 0.04);
+  color: rgba(0, 0, 0, 0.87);
+}
+/* 未钉住状态：Filled 填充图标 + 旋转 45 度 + MUI primary 蓝强调 auto-hide 已激活 */
+.cat-pin-btn.cat-unpinned {
+  transform: rotate(45deg);
+  color: #1976d2;
+}
+.cat-pin-btn.cat-unpinned:hover {
+  transform: rotate(45deg) scale(1.08);
+  color: #1565c0;
+}
+.cat-pin-btn svg {
+  display: block;
+}
+
+/* === 自动贴边隐藏（MVP：针对项目文件 panel） === */
+/* 通用：panel 收缩为边条，overflow 可见以让 .dock 覆盖展开 */
+.dock-panel.cat-autohide {
+  overflow: visible !important;
+  position: relative;
+}
+
+/* hbox 中：竖条（收缩宽度），内容向右展开 */
+.dock-hbox > .dock-panel.cat-autohide {
+  flex: 0 0 24px !important;
+  min-width: 24px !important;
+}
+.dock-hbox > .dock-panel.cat-autohide::before {
+  content: "项目文件";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 24px;
+  height: 100%;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  background: #fafafd;
+  border-right: 1px solid #ddd;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: #666;
+  z-index: 1;
+  letter-spacing: 1px;
+}
+.dock-hbox > .dock-panel.cat-autohide > .dock {
+  position: absolute !important;
+  left: 24px;
+  top: 0;
+  height: 100%;
+  width: var(--cat-autohide-w, 300px);
+  background: #fff;
+  border: 1px solid #ddd;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.12);
+  z-index: 100;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  overflow: hidden;
+}
+.dock-hbox > .dock-panel.cat-autohide.cat-autohide-expanded > .dock {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+/* vbox 中：横条（收缩高度），内容向下展开 */
+.dock-vbox > .dock-panel.cat-autohide {
+  flex: 0 0 24px !important;
+  min-height: 24px !important;
+}
+.dock-vbox > .dock-panel.cat-autohide::before {
+  content: "项目文件";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 24px;
+  background: #fafafd;
+  border-bottom: 1px solid #ddd;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: #666;
+  z-index: 1;
+  letter-spacing: 1px;
+}
+.dock-vbox > .dock-panel.cat-autohide > .dock {
+  position: absolute !important;
+  left: 0;
+  top: 24px;
+  width: 100%;
+  height: var(--cat-autohide-h, 400px);
+  background: #fff;
+  border: 1px solid #ddd;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  z-index: 100;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  overflow: hidden;
+}
+.dock-vbox > .dock-panel.cat-autohide.cat-autohide-expanded > .dock {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+/* === 项目文件树形导航 === */
+/* 隐藏 SimpleTreeView 默认的展开箭头图标容器（用文件夹开合图标替代） */
+.cat-tree .MuiTreeItem-iconContainer {
+  display: none !important;
+}
+/* 层级虚线：每个子组左侧加虚线边框，形成树形缩进引导线 */
+.cat-tree .MuiTreeItem-groupTransition {
+  border-left: 1px dashed rgba(0, 0, 0, 0.18);
+  margin-left: 11px;
+  padding-left: 4px;
+}
+/* 暗色主题下的虚线颜色 */
+[data-theme="dark"] .cat-tree .MuiTreeItem-groupTransition {
+  border-left-color: rgba(255, 255, 255, 0.18);
+}
+/* 行高与点击区域 */
+.cat-tree .MuiTreeItem-content {
+  min-height: 28px;
+}
+.cat-tree .MuiTreeItem-label {
+  font-size: 13px;
+}
+
+/* === 全局外观：字体 + 基准字号（作用于 rc-dock 面板内容区，不影响 Tab栏/顶部栏/底部栏） === */
+/*
+ * 变量由 uiAppearance store 写入 document.documentElement.style：
+ *   --app-content-font-family: 字体栈（如 "Microsoft YaHei", ...）
+ *   --app-content-font-size:  基准字号 px（body2 层级，默认 14px）
+ *
+ * 作用域选择器：.dock-panel > .dock > .dock-content-holder  （rc-dock 中 Tab 内容容器）
+ *   - 自动排除 .dock-bar（Tab 按钮栏本身）
+ *   - 顶部 AppBar / 底部 StatusBar 在 dock 外部，天然不受影响
+ */
+
+:root {
+  --app-content-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --app-content-font-size: 14px;
+}
+
+/* 面板内容容器：字体变量全局继承 + 基准字号应用于 body2 层级的默认文本 */
+.dock-panel > .dock > .dock-content-holder,
+.dock-panel > .dock > .dock-content-holder * {
+  font-family: var(--app-content-font-family) !important;
+}
+/* rc-dock 动态包装 div（.rc-dock-tab-pane > div > div）也纳入 */
+.rc-dock-layout .dock-content-holder,
+.rc-dock-layout .dock-content-holder * {
+  font-family: var(--app-content-font-family) !important;
+}
+
+/* —— Typography 各 variant 按基准字号比例缩放（保留视觉层次） —— */
+
+.dock-panel > .dock > .dock-content-holder .MuiTypography-caption,
+.dock-panel > .dock > .dock-content-holder .MuiChip-label {
+  font-size: calc(var(--app-content-font-size) * 0.86) !important;
+}
+
+.dock-panel > .dock > .dock-content-holder .MuiTypography-body2,
+.dock-panel > .dock > .dock-content-holder .MuiListItemText-secondary,
+.dock-panel > .dock > .dock-content-holder .MuiFormHelperText-root {
+  font-size: var(--app-content-font-size) !important;
+}
+
+.dock-panel > .dock > .dock-content-holder .MuiTypography-body1,
+.dock-panel > .dock > .dock-content-holder .MuiListItemText-primary,
+.dock-panel > .dock > .dock-content-holder .MuiInputBase-input,
+.dock-panel > .dock > .dock-content-holder .MuiInputBase-root,
+.dock-panel > .dock > .dock-content-holder .MuiMenuItem-root,
+.dock-panel > .dock > .dock-content-holder .MuiSelect-select,
+.dock-panel > .dock > .dock-content-holder .MuiTextField-root .MuiOutlinedInput-input,
+.dock-panel > .dock > .dock-content-holder .MuiTextField-root .MuiFilledInput-input,
+.dock-panel > .dock > .dock-content-holder .MuiTextField-root .MuiInput-input {
+  font-size: calc(var(--app-content-font-size) * 1.07) !important;
+}
+
+.dock-panel > .dock > .dock-content-holder .MuiTypography-subtitle2,
+.dock-panel > .dock > .dock-content-holder .MuiButton-root,
+.dock-panel > .dock > .dock-content-holder .MuiIconButton-root .MuiSvgIcon-root {
+  /* 字号保持基准或略小；按钮/Icon 颜色不变，图标大小不随字号缩放避免布局错位 */
+}
+
+.dock-panel > .dock > .dock-content-holder .MuiTypography-subtitle2 {
+  font-size: calc(var(--app-content-font-size) * 1.0) !important;
+}
+
+.dock-panel > .dock > .dock-content-holder .MuiTypography-subtitle1,
+.dock-panel > .dock > .dock-content-holder .MuiInputLabel-root.MuiInputLabel-shrink {
+  font-size: calc(var(--app-content-font-size) * 1.07) !important;
+}
+
+.dock-panel > .dock > .dock-content-holder .MuiTypography-h6 {
+  font-size: calc(var(--app-content-font-size) * 1.29) !important;
+}
+
+.dock-panel > .dock > .dock-content-holder .MuiButton-root {
+  font-size: calc(var(--app-content-font-size) * 0.93) !important;
+}
+
+.dock-panel > .dock > .dock-content-holder .MuiInputLabel-root {
+  font-size: calc(var(--app-content-font-size) * 1.0) !important;
+}
+
+/* MUI Table 单元格 */
+.dock-panel > .dock > .dock-content-holder .MuiTableCell-root,
+.dock-panel > .dock > .dock-content-holder .MuiDataGrid-root,
+.dock-panel > .dock > .dock-content-holder .MuiDataGrid-cell {
+  font-size: var(--app-content-font-size) !important;
+}
+
+/* 双语编辑器：原文/译文 contenteditable 与普通段落字号同步（不强制加粗 font-family，已由全局继承） */
+.dock-panel > .dock > .dock-content-holder [contenteditable="true"] {
+  font-size: var(--app-content-font-size) !important;
+}
+
+/* rc-dock 的 Tab 栏本身 / OperationNode 不缩放（保持紧凑） */
+.dock-panel > .dock > .dock-bar *,
+.dock-panel > .dock > .dock-bar .dock-tab > div,
+.dock-panel > .dock > .dock-bar .dock-tab-close-btn {
+  font-size: 12px !important; /* rc-dock 默认紧凑字号，不跟随内容区基准变化 */
+  font-family: inherit !important; /* 仍继承全局字体，但保留紧凑尺寸 */
+}
+
+/* === 深色模式：覆盖 rc-dock 硬编码的白色背景 === */
+/*
+ * rc-dock.css 中 .dock-panel { background: #fff } 等硬编码白色，
+ * 导致深色模式下面板背景仍是白色，白字白底不可见。
+ * 此处用 [data-theme="dark"] 选择器覆盖为 MUI 深色色板对应值。
+ */
+[data-theme="dark"] .dock-panel {
+  background: #162130 !important;             /* background.paper */
+}
+[data-theme="dark"] .dock-panel > .dock {
+  background: #162130 !important;
+}
+[data-theme="dark"] .dock-panel > .dock > .dock-bar {
+  background: #1a2735 !important;             /* 略浅于 paper，区分 Tab 栏与内容区 */
+  border-bottom-color: rgba(255,255,255,0.12) !important;
+}
+[data-theme="dark"] .dock-panel > .dock > .dock-bar .dock-tab,
+[data-theme="dark"] .dock-panel.dock-style-main .dock-tab {
+  color: rgba(255,255,255,0.5) !important;    /* 未激活 Tab：text.disabled */
+  background: transparent !important;          /* 覆盖 rc-dock #fafafd / #fff */
+  border-bottom-color: rgba(255,255,255,0.08) !important;
+}
+[data-theme="dark"] .dock-panel > .dock > .dock-bar .dock-tab-active {
+  color: #90caf9 !important;                  /* 激活 Tab：primary.main */
+  background: rgba(144,202,249,0.08) !important;
+}
+[data-theme="dark"] .dock-panel > .dock > .dock-bar .dock-tab:hover {
+  background: rgba(255,255,255,0.04) !important;
+}
+[data-theme="dark"] .dock-panel > .dock > .dock-content-holder {
+  background: #162130 !important;
+  color: rgba(255,255,255,0.87) !important;   /* text.primary */
+}
+[data-theme="dark"] .dock-panel > .dock > .dock-bar .dock-tab-close-btn {
+  color: rgba(255,255,255,0.5) !important;
+}
+[data-theme="dark"] .dock-panel > .dock > .dock-bar .dock-tab-close-btn:hover {
+  color: rgba(255,255,255,0.87) !important;
+}
+
+/* 深色模式：竖排 Tab 栏边框 */
+[data-theme="dark"] .dock-panel.cat-tabbar-vertical > .dock > .dock-bar {
+  border-right-color: rgba(255,255,255,0.12) !important;
+}
+[data-theme="dark"] .dock-panel.cat-tabbar-vertical > .dock > .dock-bar .dock-tab {
+  border-bottom-color: rgba(255,255,255,0.08) !important;
+}
+[data-theme="dark"] .dock-panel.cat-tabbar-vertical > .dock > .dock-bar .dock-tab-active {
+  border-right-color: #90caf9 !important;
+}
+
+/* 深色模式：图钉按钮 */
+[data-theme="dark"] .cat-pin-btn {
+  color: rgba(255,255,255,0.54);
+}
+[data-theme="dark"] .cat-pin-btn:hover {
+  background-color: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.87);
+}
+[data-theme="dark"] .cat-pin-btn.cat-unpinned {
+  color: #90caf9;
+}
+[data-theme="dark"] .cat-pin-btn.cat-unpinned:hover {
+  color: #b3d4f7;
+}
+
+/* 深色模式：auto-hide 收缩条与展开内容 */
+[data-theme="dark"] .dock-hbox > .dock-panel.cat-autohide::before,
+[data-theme="dark"] .dock-vbox > .dock-panel.cat-autohide::before {
+  background: #1a2735;
+  border-color: rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.5);
+}
+[data-theme="dark"] .dock-hbox > .dock-panel.cat-autohide > .dock,
+[data-theme="dark"] .dock-vbox > .dock-panel.cat-autohide > .dock {
+  background: #162130;
+  border-color: rgba(255,255,255,0.12);
+  box-shadow: 2px 0 8px rgba(0,0,0,0.4);
+}
+
+/* 深色模式：rc-dock 拖拽遮罩 / float 面板 */
+[data-theme="dark"] .dock-panel.dock-style-float {
+  background: #162130 !important;
+}
+[data-theme="dark"] .dock-drop-edge,
+[data-theme="dark"] .dock-drop-layer {
+  background: rgba(144,202,249,0.15) !important;
+  border-color: #90caf9 !important;
+}
+
+/* 深色模式：rc-dock 分隔条 hover */
+[data-theme="dark"] .dock-divider:hover {
+  background: rgba(255,255,255,0.12);
+}
+
+/* === 词典/记忆布局：保留 class 占位，当前不再限制 tab 拖拽 / 面板浮动 === */
+
+/* === docx / pdf 原格式预览：句子级高亮（CSS Custom Highlight API） === */
+/* 不修改 DOM 结构，通过 Range + Highlight API 精确高亮句子文本 */
+::highlight(cat-docx-sentence),
+::highlight(cat-pdf-sentence) {
+  background-color: rgba(25, 118, 210, 0.28);
+}
+/* 句子级高亮降级方案（CSS.highlights 不可用时）：包裹 span 的样式 */
+.cat-docx-sentence-mark {
+  background-color: rgba(25, 118, 210, 0.28);
+  border-radius: 2px;
+}
+/* docx 激活段落块的淡色背景（句子级高亮之上的段落定位提示） */
+.cat-docx-active-block {
+  background-color: rgba(25, 118, 210, 0.05) !important;
+  border-left: 3px solid rgba(25, 118, 210, 0.35) !important;
+  padding-left: 4px !important;
+  transition: background-color 0.2s ease;
+}
+/* pdf 激活页面的淡色外框（句子级高亮之上的页面定位提示） */
+.cat-pdf-active-page {
+  box-shadow: 0 0 0 3px rgba(25,118,210,0.35), 0 2px 8px rgba(0,0,0,0.12) !important;
+  border-left: 3px solid rgba(25,118,210,0.5) !important;
+  transition: box-shadow 0.2s ease;
+}
+/* PDF 文本层：文字 color:transparent 由 PDF.js 默认，点击时不选中 canvas 内容 */
+.cat-pdf-page .textLayer {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: auto;
+  color: transparent;
+  z-index: 1;
+}
+.cat-pdf-page .textLayer ::selection {
+  background: rgba(25, 118, 210, 0.3);
+}
+
+

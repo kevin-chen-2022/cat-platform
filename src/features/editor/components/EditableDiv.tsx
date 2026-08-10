@@ -122,11 +122,6 @@ export function EditableDiv({
     document.execCommand('insertText', false, text)
   }, [])
 
-  // 点击不冒泡到行（避免触发行选中切换）
-  const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    e.stopPropagation()
-  }, [])
-
   // 空内容时显示 placeholder（用 CSS 伪元素实现）
   // 富文本模式下需额外检查 <br> 等浏览器插入的空内容
   const showPlaceholder = richText
@@ -143,7 +138,6 @@ export function EditableDiv({
       onCompositionEnd={handleCompositionEnd}
       onKeyDown={handleKeyDown}
       onPaste={handlePaste}
-      onClick={handleClick}
       data-seg-id={dataSegId != null ? String(dataSegId) : undefined}
       data-placeholder={showPlaceholder ? placeholder : undefined}
       sx={{

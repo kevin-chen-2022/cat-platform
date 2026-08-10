@@ -217,6 +217,15 @@ const USAGE_SECTIONS: Array<{
             原文行内的"AI 解释""机器翻译""词典查询"等按钮和 AI 翻译卡片中的"重译"按钮属于用户主动操作，不判断段落状态，随时可用。
           </Typography>
         </Box>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>TM 自动填充（✅ 列表打勾图标）</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            双语编辑器工具栏提供 TM 自动填充按钮（位于自动翻译按钮右侧），可批量处理未译段落：<br/>
+            • <strong>普通点击</strong>：以 100% 匹配阈值填充当前文件所有未译段——从翻译记忆库查找完全匹配的句对，自动填入译文并标记为草稿。<br/>
+            • <strong>Shift + 点击</strong>：弹出阈值设置对话框，可降低匹配阈值（如 75%）以填充模糊匹配段，但准确度相应降低。<br/>
+            数据源优先级：当前项目 TM → 全局同语言对 TM → 当前文件已译段落（回退）。已译段落不会被覆盖。建议先用 TM 自动填充处理高匹配段（免费、即时），再对剩余未译段用 AI/MT 翻译。
+          </Typography>
+        </Box>
       </Box>
     ),
   },

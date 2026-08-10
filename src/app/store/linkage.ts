@@ -20,6 +20,7 @@ import { useAiQAStore } from './aiQA'
 import { useMachineTranslationStore } from './machineTranslation'
 import { useDictionaryStore } from './dictionary'
 import { useEditorContextStore } from './editorContext'
+import { needsTranslation } from '@/shared/utils/segmentFilter'
 
 // ---- 事件类型 ----
 export type LinkageEvent = 'segmentActivated' | 'sourceSelected' | 'targetSelected'
@@ -50,14 +51,14 @@ interface LinkageRule {
 
 // ---- 各目标卡片的动作实现 ----
 
-/** AI翻译：发送原文 → 显示 AI 译文（仅未译段落自动触发，过滤已译状态） */
+/** AI翻译：发送原文 → 显示 AI 译文（仅需要翻译的段落自动触发，避免覆盖已有译文） */
 function sendToAiTranslate(payload: SegmentActivatedPayload): void {
   const text = payload.sourceText?.trim()
   if (!text) return
-  // 正向联动过滤：仅未译段落才自动触发 AI 翻译，避免覆盖已译内容
+  // 正向联动过滤：仅需要翻译的段落才自动触发 AI 翻译，避免覆盖已有译文
   if (payload.segmentId != null) {
     const seg = useProjectStore.getState().segments.find((s) => s.id === payload.segmentId)
-    if (seg && seg.status !== 'untranslated') return
+    if (seg && !needsTranslation(seg)) return
   }
   // 复用 AI翻译的 setTranslate 接口，仅设置 text，保留 src/tgt/domain 现有值
   useAiQAStore.getState().setTranslate({ text })
@@ -72,14 +73,14 @@ function sendToTM(payload: SegmentActivatedPayload): void {
   useLinkageTMStore.getState().setQuery(text)
 }
 
-/** 机器翻译：发送原文 → 显示机器译文（仅未译段落自动触发，过滤已译状态） */
+/** 机器翻译：发送原文 → 显示机器译文（仅需要翻译的段落自动触发，避免覆盖已有译文） */
 function sendToMachineTranslate(payload: SegmentActivatedPayload): void {
   const text = payload.sourceText?.trim()
   if (!text) return
-  // 正向联动过滤：仅未译段落才自动触发机器翻译，避免覆盖已译内容
+  // 正向联动过滤：仅需要翻译的段落才自动触发机器翻译，避免覆盖已有译文
   if (payload.segmentId != null) {
     const seg = useProjectStore.getState().segments.find((s) => s.id === payload.segmentId)
-    if (seg && seg.status !== 'untranslated') return
+    if (seg && !needsTranslation(seg)) return
   }
   useMachineTranslationStore.getState().setQueryText(text)
 }
@@ -272,7 +273,7 @@ function isTranslateMode(): boolean {
 
 // ---- 反向动作实现 ----
 
-/** AI翻译反向：激活 AI翻译 tab → 读当前段原文 → 新内容则触发 AI 翻译（仅未译段落） */
+/** AI翻译反向：激活 AI翻译 tab → 读当前段原文 → 新内容则触发 AI 翻译（仅需要翻译的段落） */
 function reverseAiTranslate(): boolean {
   const p = useProjectStore.getState()
   const id = p.activeSegmentId
@@ -280,8 +281,8 @@ function reverseAiTranslate(): boolean {
   const seg = p.segments.find((s) => s.id === id)
   const text = (seg?.source ?? '').trim()
   if (!text) return false
-  // 反向联动过滤：仅未译段落才自动触发 AI 翻译，避免覆盖已译内容
-  if (seg && seg.status !== 'untranslated') return false
+  // 反向联动过滤：仅需要翻译的段落才自动触发 AI 翻译，避免覆盖已有译文
+  if (seg && !needsTranslation(seg)) return false
   const s = useAiQAStore.getState()
   if (s.translateText.trim() === text) return false // 相同内容，跳过
   s.setTranslate({ text })
@@ -299,7 +300,7 @@ function reverseTM(): boolean {
   return true
 }
 
-/** 机器翻译反向：激活 MT tab → 读当前段原文 → 新内容则触发机器翻译（仅未译段落） */
+/** 机器翻译反向：激活 MT tab → 读当前段原文 → 新内容则触发机器翻译（仅需要翻译的段落） */
 function reverseMT(): boolean {
   const p = useProjectStore.getState()
   const id = p.activeSegmentId
@@ -307,8 +308,8 @@ function reverseMT(): boolean {
   const seg = p.segments.find((s) => s.id === id)
   const text = (seg?.source ?? '').trim()
   if (!text) return false
-  // 反向联动过滤：仅未译段落才自动触发机器翻译，避免覆盖已译内容
-  if (seg && seg.status !== 'untranslated') return false
+  // 反向联动过滤：仅需要翻译的段落才自动触发机器翻译，避免覆盖已有译文
+  if (seg && !needsTranslation(seg)) return false
   const s = useMachineTranslationStore.getState()
   if (s.queryText.trim() === text) return false
   s.setQueryText(text)

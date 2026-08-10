@@ -15,6 +15,9 @@ import { EditableDiv } from './EditableDiv'
 import { showTabInDock } from '@/app/layout/DockLayout'
 import { doInsertViaExecCommand } from '@/shared/utils/insertText'
 import { buildTermHint } from '@/shared/utils/termMatch'
+import { needsTranslation } from '@/shared/utils/segmentFilter'
+import { searchMemory } from '@/services/tm/engine'
+import type { TMEntry, LanguageCode } from '@/types'
 // Icons
 import ViewStreamIcon from '@mui/icons-material/ViewStream'
 import ViewColumnIcon from '@mui/icons-material/ViewColumn'
@@ -36,6 +39,7 @@ import BookmarkAddIcon from '@mui/icons-material/BookmarkAdd'
 import UndoIcon from '@mui/icons-material/Undo'
 import RedoIcon from '@mui/icons-material/Redo'
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
+import PlaylistAddCheckIcon from '@mui/icons-material/PlaylistAddCheck'
 import SearchIcon from '@mui/icons-material/Search'
 import CloseIcon from '@mui/icons-material/Close'
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown'
@@ -1137,6 +1141,10 @@ export function DivBilingualEditor(): ReactElement {
   const [showAutoTranslateDialog, setShowAutoTranslateDialog] = useState(false)
   const [autoTranslateCount, setAutoTranslateCount] = useState('50')
   const autoCancelRef = useRef(false)
+  // TM 自动填充状态
+  const [tmAutoFilling, setTmAutoFilling] = useState(false)
+  const [showTmAutoFillDialog, setShowTmAutoFillDialog] = useState(false)
+  const [tmAutoFillThreshold, setTmAutoFillThreshold] = useState('100')
   // 剪贴板翻译
   const [showClipboardDialog, setShowClipboardDialog] = useState(false)
   const [clipboardManualText, setClipboardManualText] = useState('')
@@ -1247,11 +1255,11 @@ export function DivBilingualEditor(): ReactElement {
       ...state.segments.slice(fromIdx + 1),
       ...state.segments.slice(0, Math.max(0, fromIdx + 1)),
     ]
-    const found = searchOrder.find((s) => s.status === 'untranslated' && s.source?.trim())
+    const found = searchOrder.find((s) => needsTranslation(s))
     if (found) {
       selectSegment(found.id!)
     } else {
-      useUIStore.getState().notify('info', '没有未译段落')
+      useUIStore.getState().notify('info', '没有需要翻译的段落')
     }
   }, [selectSegment])
 
@@ -1493,11 +1501,11 @@ export function DivBilingualEditor(): ReactElement {
       useUIStore.getState().notify('warning', '请先在「设置 → AI问答 → API 调用」中配置并启用至少一个 AI 提供商')
       return
     }
-    // 2. 收集未译段落（status === 'untranslated'）
+    // 2. 收集需要翻译的段落（未译状态 或 译文为空）
     const allSegments = useProjectStore.getState().segments
-    const untranslated = allSegments.filter((s) => s.status === 'untranslated' && s.source?.trim())
+    const untranslated = allSegments.filter((s) => needsTranslation(s))
     if (untranslated.length === 0) {
-      useUIStore.getState().notify('info', '当前文件没有未翻译的段落')
+      useUIStore.getState().notify('info', '当前文件没有需要翻译的段落')
       return
     }
     // 取前 count 句（不足则取全部）
@@ -1559,6 +1567,78 @@ export function DivBilingualEditor(): ReactElement {
       `自动翻译完成${cancelledNote}：成功 ${success} 句${failed > 0 ? `，失败 ${failed} 句` : ''}`,
     )
   }, [autoTranslating])
+
+  // —— TM 自动填充：遍历未译段，查翻译记忆库，匹配度 ≥ 阈值则填充译文 ——
+
+  const handleTmAutoFill = useCallback(async (threshold: number) => {
+    if (tmAutoFilling) return
+    const projState = useProjectStore.getState()
+    const projectId = projState.currentProjectId
+    if (projectId == null) {
+      useUIStore.getState().notify('warning', '请先打开或创建项目')
+      return
+    }
+    const allSegments = projState.segments
+    const untranslated = allSegments.filter((s) => needsTranslation(s))
+    if (untranslated.length === 0) {
+      useUIStore.getState().notify('info', '当前文件没有需要翻译的段落')
+      return
+    }
+    // 加载 TM 条目（优先当前项目，无则全局同语言对）
+    const cur = projState.projects.find((p) => p.id === projectId)
+    const src = cur?.sourceLang as LanguageCode | undefined
+    const tgt = cur?.targetLang as LanguageCode | undefined
+    let entries: TMEntry[] = []
+    try {
+      entries = await db.tmEntries.where('projectId').equals(projectId as number).toArray()
+      if (entries.length === 0 && src) {
+        entries = await db.tmEntries.where('sourceLang').equals(src).toArray()
+      }
+    } catch { /* ignore */ }
+    // 回退：用当前文件已译段落构造伪 TMEntry
+    if (entries.length === 0) {
+      const now = Date.now()
+      entries = allSegments
+        .filter((s) => s.target?.trim() && s.source?.trim())
+        .map((s) => ({
+          source: s.source,
+          target: s.target,
+          sourceLang: (src ?? 'en') as LanguageCode,
+          targetLang: (tgt ?? 'zh-CN') as LanguageCode,
+          projectId: projectId ?? undefined,
+          createdAt: now,
+          updatedAt: now,
+        } as TMEntry))
+    }
+    if (entries.length === 0) {
+      useUIStore.getState().notify('info', '翻译记忆库为空，无可填充内容')
+      return
+    }
+    setTmAutoFilling(true)
+    let filled = 0
+    let skipped = 0
+    const updateSegment = projState.updateSegment
+    for (const seg of untranslated) {
+      if (!seg.id || !seg.source?.trim()) { skipped++; continue }
+      const matches = searchMemory(entries, seg.source, {
+        sourceLang: src,
+        targetLang: tgt,
+        threshold,
+        limit: 1,
+      })
+      if (matches.length > 0 && matches[0].entry.target.trim()) {
+        await updateSegment(seg.id, { target: matches[0].entry.target.trim(), status: 'draft' })
+        filled++
+      } else {
+        skipped++
+      }
+    }
+    setTmAutoFilling(false)
+    useUIStore.getState().notify(
+      filled > 0 ? 'success' : 'info',
+      `TM 自动填充完成：填充 ${filled} 段，跳过 ${skipped} 段（阈值 ${threshold}%）`,
+    )
+  }, [tmAutoFilling])
 
   // —— 渲染 ——
 
@@ -1749,6 +1829,22 @@ export function DivBilingualEditor(): ReactElement {
             <AutoAwesomeIcon fontSize="small" />
           </IconButton>
         </Tooltip>
+        <Tooltip title={tmAutoFilling ? 'TM 自动填充中…' : 'TM 自动填充未译段（Shift+点击设置阈值）'}>
+          <IconButton
+            size="small"
+            disabled={tmAutoFilling}
+            onClick={(e) => {
+              if (e.shiftKey) {
+                setShowTmAutoFillDialog(true)
+              } else {
+                handleTmAutoFill(100)
+              }
+            }}
+            sx={{ color: 'primary.main' }}
+          >
+            {tmAutoFilling ? <CircularProgress size={16} /> : <PlaylistAddCheckIcon fontSize="small" />}
+          </IconButton>
+        </Tooltip>
         <Tooltip title="查找/替换 (Ctrl+F)">
           <IconButton size="small" onClick={() => setShowSearchBar((v) => !v)} sx={{ color: showSearchBar ? 'primary.main' : 'text.disabled' }}>
             <SearchIcon fontSize="small" />
@@ -1795,6 +1891,40 @@ export function DivBilingualEditor(): ReactElement {
             }}
           >
             开始翻译
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* TM 自动填充阈值设置对话框（Shift+点击触发） */}
+      <Dialog open={showTmAutoFillDialog} onClose={() => setShowTmAutoFillDialog(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>TM 自动填充设置</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+            从翻译记忆库中查找匹配度达到阈值的未译段落，自动填入对应译文。已译段落不会被覆盖。
+          </Typography>
+          <TextField
+            autoFocus
+            size="small"
+            fullWidth
+            type="number"
+            label="匹配阈值（%）"
+            value={tmAutoFillThreshold}
+            onChange={(e) => setTmAutoFillThreshold(e.target.value)}
+            slotProps={{ htmlInput: { min: 1, max: 100 } }}
+            helperText="100% = 完全匹配；降低阈值可填充模糊匹配段（准确度降低）"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowTmAutoFillDialog(false)}>取消</Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              const t = parseInt(tmAutoFillThreshold, 10)
+              setShowTmAutoFillDialog(false)
+              if (t >= 1 && t <= 100) handleTmAutoFill(t)
+            }}
+          >
+            开始填充
           </Button>
         </DialogActions>
       </Dialog>
@@ -2253,6 +2383,7 @@ function FocusEditPanel(props: FocusEditPanelProps) {
         <Box
           onMouseUp={onTargetMouseUp}
           onKeyUp={onTargetKeyUp}
+          onFocus={() => { editingValueRef.current = seg?.target ?? '' }}
           onBlur={handleBlur}
           sx={{
             gridColumn: 2, gridRow: 4,
@@ -2448,6 +2579,7 @@ function StackModeRow(props: SharedRowProps) {
         onClick={(e) => { if (!disableEdit) { e.stopPropagation(); onTargetClick() } }}
         onMouseUp={!disableEdit ? onTargetMouseUp : undefined}
         onKeyUp={!disableEdit ? onTargetKeyUp : undefined}
+        onFocus={() => { if (!disableEdit) editingValueRef.current = seg.target ?? '' }}
         onBlur={!disableEdit ? handleBlur : undefined}
         sx={{
           gridColumn: 2,
@@ -2680,6 +2812,7 @@ function TableModeRow(props: SharedRowProps) {
         onClick={(e) => { if (!disableEdit) { e.stopPropagation(); onTargetClick() } }}
         onMouseUp={!disableEdit ? onTargetMouseUp : undefined}
         onKeyUp={!disableEdit ? onTargetKeyUp : undefined}
+        onFocus={() => { if (!disableEdit) editingValueRef.current = seg.target ?? '' }}
         onBlur={!disableEdit ? handleBlur : undefined}
         sx={{
           gridColumn: 3,

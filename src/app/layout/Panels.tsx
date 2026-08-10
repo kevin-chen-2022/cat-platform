@@ -464,13 +464,13 @@ export function TBPanel(): ReactElement {
     return matchTermsForSource(activeSegment.source, terms)
   }, [terms, activeSegment])
 
-  // 自动填充：编辑器选中内容实时同步到术语输入框
+  // 自动填充：编辑器选中内容实时同步到术语输入框（仅同步非空文本，避免取消选中时清空已有内容）
   useEffect(() => {
-    setTermSource(sourceSelection?.text ?? '')
+    if (sourceSelection?.text) setTermSource(sourceSelection.text)
   }, [sourceSelection])
 
   useEffect(() => {
-    setTermTarget(targetSelection?.text ?? '')
+    if (targetSelection?.text) setTermTarget(targetSelection.text)
   }, [targetSelection])
 
   // 提交术语

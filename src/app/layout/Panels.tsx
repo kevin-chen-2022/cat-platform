@@ -4249,6 +4249,7 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
   const [previewDupHint, setPreviewDupHint] = useState<{ dup: number; add: number; update: number } | null>(null)
   const [inputCollapsed, setInputCollapsed] = useState(false)
   const [dualMode, setDualMode] = useState(false)
+  const [enablePreprocess, setEnablePreprocess] = useState(false)
   const [pasteSrcText, setPasteSrcText] = useState('')
   const [pasteTgtText, setPasteTgtText] = useState('')
   const [srcFileName, setSrcFileName] = useState('')
@@ -4258,6 +4259,17 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const srcFileInputRef = useRef<HTMLInputElement | null>(null)
   const tgtFileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const preprocessText = useCallback((text: string) => {
+    if (!enablePreprocess) return text
+    // 删除每行句前空白
+    let processed = text.replace(/^\s+/gm, '')
+    // 删除多余空行（连续多个空行合并为一个空行）
+    processed = processed.replace(/^\s*[\r\n]{2,}\s*/gm, '\n\n')
+    // 移除开头空行
+    processed = processed.replace(/^\s*[\r\n]+/, '')
+    return processed
+  }, [enablePreprocess])
 
   const resetState = () => {
     setTab('paste')
@@ -4271,6 +4283,7 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
     setPreviewDupHint(null)
     setInputCollapsed(false)
     setDualMode(false)
+    setEnablePreprocess(false)
     setPasteSrcText('')
     setPasteTgtText('')
     setSrcFileName('')
@@ -4293,7 +4306,7 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
     setFileName(f.name)
     try {
       const text = await f.text()
-      setFileText(text)
+      setFileText(preprocessText(text))
     } catch (err) {
       notify('error', '读取文件失败：' + (err as Error).message)
     }
@@ -4320,7 +4333,7 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
     try {
       const { names, text } = await readMultipleSorted(files)
       setSrcFileName(names)
-      setSrcFileText(text)
+      setSrcFileText(preprocessText(text))
     } catch (err) {
       notify('error', '读取原文文件失败：' + (err as Error).message)
     }
@@ -4332,7 +4345,7 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
     try {
       const { names, text } = await readMultipleSorted(files)
       setTgtFileName(names)
-      setTgtFileText(text)
+      setTgtFileText(preprocessText(text))
     } catch (err) {
       notify('error', '读取译文文件失败：' + (err as Error).message)
     }
@@ -4341,15 +4354,15 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
   const doParse = () => {
     let parsed: AlignRow[]
     if (dualMode) {
-      const srcText = tab === 'paste' ? pasteSrcText : srcFileText
-      const tgtText = tab === 'paste' ? pasteTgtText : tgtFileText
+      const srcText = tab === 'paste' ? preprocessText(pasteSrcText) : srcFileText
+      const tgtText = tab === 'paste' ? preprocessText(pasteTgtText) : tgtFileText
       if (!srcText.trim() && !tgtText.trim()) {
         notify('warning', '请先粘贴或上传原文与译文（双列模式）')
         return
       }
       parsed = pairByLines(srcText, tgtText)
     } else {
-      const srcText = tab === 'paste' ? pasteText : fileText
+      const srcText = tab === 'paste' ? preprocessText(pasteText) : fileText
       if (!srcText.trim()) {
         notify('warning', '请先粘贴或上传待整理的双语文本')
         return
@@ -4568,7 +4581,7 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
           </Stack>
 
           <Collapse in={!inputCollapsed}>
-          <Stack direction="row" sx={{ mb: 2, alignItems: 'center', gap: 2 }}>
+          <Stack direction="row" sx={{ mb: 2, alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
             <FormControlLabel
               control={
                 <Switch
@@ -4578,6 +4591,16 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
                 />
               }
               label={<Typography variant="body2">双列模式（按行号一一对应原文与译文，分开粘贴/上传）</Typography>}
+            />
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={enablePreprocess}
+                  onChange={(e) => setEnablePreprocess(e.target.checked)}
+                  size="small"
+                />
+              }
+              label={<Typography variant="body2">文本预处理（删除句前空白、合并多余空行）</Typography>}
             />
           </Stack>
 

@@ -86,7 +86,7 @@ const USAGE_SECTIONS: Array<{
           CAT 工作台
         </Typography>
         <Typography variant="body2" color="text.secondary" gutterBottom>
-          版本号 · 更新日期：2026 年 8 月
+          版本 1.0 · 更新日期：2026 年 8 月
         </Typography>
         <Typography variant="body2" component="div" sx={{ mb: 2 }}>
           开源免费、实用强大的 CAT 工具。基于浏览器本地运行，数据存储在 IndexedDB 中，无需注册、无需联网即可使用。

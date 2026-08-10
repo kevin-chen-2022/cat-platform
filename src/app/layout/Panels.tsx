@@ -7,9 +7,10 @@ import {
   CircularProgress, Dialog, DialogTitle, DialogContent, DialogActions,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   Select, MenuItem, FormControl, InputLabel, Chip, Alert,
-  Menu, Popover, ListItemIcon, ListItemText,
+  Menu, Popover, ListItemIcon, ListItemText, Collapse, Switch,
 } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import ExpandLessIcon from '@mui/icons-material/ExpandLess'
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore'
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess'
 import LanguageIcon from '@mui/icons-material/Language'
@@ -23,6 +24,7 @@ import TranslateIcon from '@mui/icons-material/Translate'
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks'
 import FolderIcon from '@mui/icons-material/Folder'
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined'
+import ClearAllIcon from '@mui/icons-material/ClearAll'
 import ScienceIcon from '@mui/icons-material/Science'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import SendIcon from '@mui/icons-material/Send'
@@ -4203,6 +4205,22 @@ function parseBilingualText(raw: string, format: BilingualFormat, customSep: str
   return rows.filter((r) => r.source || r.target)
 }
 
+/** 双列模式：按行号一一配对原文与译文，多出的行另一方配空串 */
+function pairByLines(srcRaw: string, tgtRaw: string): AlignRow[] {
+  const normLine = (s: string) => s.replace(/\r\n?/g, '\n').replace(/\u3000/g, ' ').replace(/\s+$/g, '')
+  const srcLines = normLine(srcRaw).split('\n')
+  const tgtLines = normLine(tgtRaw).split('\n')
+  const count = Math.max(srcLines.length, tgtLines.length)
+  const rows: AlignRow[] = []
+  for (let i = 0; i < count; i++) {
+    const src = (srcLines[i] ?? '').trim()
+    const tgt = (tgtLines[i] ?? '').trim()
+    if (!src && !tgt) continue
+    rows.push({ id: nextRowId(), source: src, target: tgt, selected: true })
+  }
+  return rows
+}
+
 function detectIssueFlags(rows: AlignRow[]): AlignRow[] {
   const seen = new Set<string>()
   return rows.map((r) => {
@@ -4229,7 +4247,17 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
   const [rows, setRows] = useState<AlignRow[]>([])
   const [importing, setImporting] = useState(false)
   const [previewDupHint, setPreviewDupHint] = useState<{ dup: number; add: number; update: number } | null>(null)
+  const [inputCollapsed, setInputCollapsed] = useState(false)
+  const [dualMode, setDualMode] = useState(false)
+  const [pasteSrcText, setPasteSrcText] = useState('')
+  const [pasteTgtText, setPasteTgtText] = useState('')
+  const [srcFileName, setSrcFileName] = useState('')
+  const [srcFileText, setSrcFileText] = useState('')
+  const [tgtFileName, setTgtFileName] = useState('')
+  const [tgtFileText, setTgtFileText] = useState('')
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const srcFileInputRef = useRef<HTMLInputElement | null>(null)
+  const tgtFileInputRef = useRef<HTMLInputElement | null>(null)
 
   const resetState = () => {
     setTab('paste')
@@ -4241,7 +4269,17 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
     setRows([])
     setImporting(false)
     setPreviewDupHint(null)
+    setInputCollapsed(false)
+    setDualMode(false)
+    setPasteSrcText('')
+    setPasteTgtText('')
+    setSrcFileName('')
+    setSrcFileText('')
+    setTgtFileName('')
+    setTgtFileText('')
     if (fileInputRef.current) fileInputRef.current.value = ''
+    if (srcFileInputRef.current) srcFileInputRef.current.value = ''
+    if (tgtFileInputRef.current) tgtFileInputRef.current.value = ''
   }
 
   const handleClose = () => {
@@ -4261,13 +4299,63 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
     }
   }
 
-  const doParse = () => {
-    const srcText = tab === 'paste' ? pasteText : fileText
-    if (!srcText.trim()) {
-      notify('warning', '请先粘贴或上传待整理的双语文本')
-      return
+  const readMultipleSorted = async (files: FileList | null) => {
+    if (!files || files.length === 0) return { names: '', text: '' }
+    const arr = Array.from(files).sort((a, b) => a.name.localeCompare(b.name))
+    const chunks: string[] = []
+    for (const f of arr) {
+      const t = await f.text()
+      if (!t.endsWith('\n')) chunks.push(t + '\n')
+      else chunks.push(t)
     }
-    const parsed = parseBilingualText(srcText, format, customSep)
+    return {
+      names: arr.length > 1 ? `${arr[0].name} 等 ${arr.length} 个文件` : arr[0].name,
+      text: chunks.join(''),
+    }
+  }
+
+  const handleSrcFilePicked = async (e: ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    try {
+      const { names, text } = await readMultipleSorted(files)
+      setSrcFileName(names)
+      setSrcFileText(text)
+    } catch (err) {
+      notify('error', '读取原文文件失败：' + (err as Error).message)
+    }
+  }
+
+  const handleTgtFilePicked = async (e: ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    try {
+      const { names, text } = await readMultipleSorted(files)
+      setTgtFileName(names)
+      setTgtFileText(text)
+    } catch (err) {
+      notify('error', '读取译文文件失败：' + (err as Error).message)
+    }
+  }
+
+  const doParse = () => {
+    let parsed: AlignRow[]
+    if (dualMode) {
+      const srcText = tab === 'paste' ? pasteSrcText : srcFileText
+      const tgtText = tab === 'paste' ? pasteTgtText : tgtFileText
+      if (!srcText.trim() && !tgtText.trim()) {
+        notify('warning', '请先粘贴或上传原文与译文（双列模式）')
+        return
+      }
+      parsed = pairByLines(srcText, tgtText)
+    } else {
+      const srcText = tab === 'paste' ? pasteText : fileText
+      if (!srcText.trim()) {
+        notify('warning', '请先粘贴或上传待整理的双语文本')
+        return
+      }
+      parsed = parseBilingualText(srcText, format, customSep)
+    }
     const withFlags = detectIssueFlags(parsed)
     setRows(withFlags)
     setPreviewDupHint(null)
@@ -4348,7 +4436,7 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
   }
 
   const removeEmpty = () =>
-    setRows((rs) => detectIssueFlags(rs.filter((r) => r.source.trim() || r.target.trim())))
+    setRows((rs) => detectIssueFlags(rs.filter((r) => !r.selected || (r.source.trim() || r.target.trim()))))
 
   const dedupeSelected = () => {
     setRows((rs) => {
@@ -4466,48 +4554,148 @@ export function BilingualImportDialog(props: BilingualImportDialogProps): ReactE
 
       <DialogContent dividers sx={{ display: 'flex', flexDirection: 'column', gap: 2, p: 2 }}>
         <Paper elevation={1} sx={{ p: 2 }}>
-          <Tabs value={tab} onChange={(_e, v) => setTab(v)} sx={{ mb: 2 }}>
-            <Tab label="粘贴文本" icon={<ContentCopyIcon />} iconPosition="start" value="paste" />
-            <Tab label="上传文件" icon={<FileUploadIcon />} iconPosition="start" value="file" />
-          </Tabs>
+          <Stack direction="row" sx={{ alignItems: 'center', mb: inputCollapsed ? 0 : 2 }}>
+            <Tabs value={tab} onChange={(_e, v) => setTab(v)}>
+              <Tab label="粘贴文本" icon={<ContentCopyIcon />} iconPosition="start" value="paste" />
+              <Tab label="上传文件" icon={<FileUploadIcon />} iconPosition="start" value="file" />
+            </Tabs>
+            <Box sx={{ flex: 1 }} />
+            <IconButton size="small" onClick={() => setInputCollapsed((v) => !v)}
+              aria-label={inputCollapsed ? '展开输入区' : '折叠输入区'}
+            >
+              {inputCollapsed ? <ExpandMoreIcon /> : <ExpandLessIcon />}
+            </IconButton>
+          </Stack>
+
+          <Collapse in={!inputCollapsed}>
+          <Stack direction="row" sx={{ mb: 2, alignItems: 'center', gap: 2 }}>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={dualMode}
+                  onChange={(e) => setDualMode(e.target.checked)}
+                  size="small"
+                />
+              }
+              label={<Typography variant="body2">双列模式（按行号一一对应原文与译文，分开粘贴/上传）</Typography>}
+            />
+          </Stack>
 
           {tab === 'paste' ? (
-            <TextField
-              multiline minRows={6} maxRows={10} fullWidth
-              placeholder={`粘贴双语文本，例如使用【制表符分隔】格式：
+            dualMode ? (
+              <Grid container spacing={2}>
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <TextField
+                    multiline minRows={6} maxRows={10} fullWidth
+                    label="原文" placeholder="粘贴原文，按行与右侧译文一一对应"
+                    value={pasteSrcText}
+                    onChange={(e) => setPasteSrcText(e.target.value)}
+                  />
+                </Grid>
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <TextField
+                    multiline minRows={6} maxRows={10} fullWidth
+                    label="译文" placeholder="粘贴译文，按行与左侧原文一一对应"
+                    value={pasteTgtText}
+                    onChange={(e) => setPasteTgtText(e.target.value)}
+                  />
+                </Grid>
+              </Grid>
+            ) : (
+              <TextField
+                multiline minRows={6} maxRows={10} fullWidth
+                placeholder={`粘贴双语文本，例如使用【制表符分隔】格式：
 Hello\t你好
 World\t世界
 ...`}
-              value={pasteText}
-              onChange={(e) => setPasteText(e.target.value)}
-            />
-          ) : (
-            <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
-              <Button
-                variant="outlined" startIcon={<UploadIcon />}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                选择文件
-              </Button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".txt,.csv,.md,.tmx"
-                style={{ display: 'none' }}
-                onChange={handleFilePicked}
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
               />
-              {fileName ? (
-                <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-                  <FilePresentIcon fontSize="small" color="action" />
-                  <Typography variant="body2">{fileName}</Typography>
-                  <Chip size="small" label={`${fileText.length} 字符`} variant="outlined" />
+            )
+          ) : (
+            dualMode ? (
+              <Stack direction="column" spacing={2}>
+                <Stack direction="row" spacing={2} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
+                  <Button
+                    variant="outlined" startIcon={<UploadIcon />}
+                    onClick={() => srcFileInputRef.current?.click()}
+                    title="支持多选，按文件名排序后自动拼接"
+                  >
+                    选择原文文件（可多选）
+                  </Button>
+                  <input
+                    ref={srcFileInputRef}
+                    type="file"
+                    multiple
+                    accept=".txt,.csv,.md"
+                    style={{ display: 'none' }}
+                    onChange={handleSrcFilePicked}
+                  />
+                  {srcFileName ? (
+                    <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+                      <FilePresentIcon fontSize="small" color="action" />
+                      <Typography variant="body2">{srcFileName}</Typography>
+                      <Chip size="small" color="primary" label={`原文 ${srcFileText.length} 字符`} variant="outlined" />
+                    </Stack>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">未选择原文文件</Typography>
+                  )}
                 </Stack>
-              ) : (
-                <Typography variant="body2" color="text.secondary">
-                  支持 .txt / .csv / .md 文本文件（TMX 支持后续扩展）
-                </Typography>
-              )}
-            </Stack>
+                <Stack direction="row" spacing={2} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
+                  <Button
+                    variant="outlined" startIcon={<UploadIcon />}
+                    onClick={() => tgtFileInputRef.current?.click()}
+                    title="支持多选，按文件名排序后自动拼接"
+                  >
+                    选择译文文件（可多选）
+                  </Button>
+                  <input
+                    ref={tgtFileInputRef}
+                    type="file"
+                    multiple
+                    accept=".txt,.csv,.md"
+                    style={{ display: 'none' }}
+                    onChange={handleTgtFilePicked}
+                  />
+                  {tgtFileName ? (
+                    <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+                      <FilePresentIcon fontSize="small" color="action" />
+                      <Typography variant="body2">{tgtFileName}</Typography>
+                      <Chip size="small" color="primary" label={`译文 ${tgtFileText.length} 字符`} variant="outlined" />
+                    </Stack>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">未选择译文文件</Typography>
+                  )}
+                </Stack>
+              </Stack>
+            ) : (
+              <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
+                <Button
+                  variant="outlined" startIcon={<UploadIcon />}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  选择文件
+                </Button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".txt,.csv,.md,.tmx"
+                  style={{ display: 'none' }}
+                  onChange={handleFilePicked}
+                />
+                {fileName ? (
+                  <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+                    <FilePresentIcon fontSize="small" color="action" />
+                    <Typography variant="body2">{fileName}</Typography>
+                    <Chip size="small" label={`${fileText.length} 字符`} variant="outlined" />
+                  </Stack>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    支持 .txt / .csv / .md 文本文件（TMX 支持后续扩展）
+                  </Typography>
+                )}
+              </Stack>
+            )
           )}
 
           <Divider sx={{ my: 2 }} />
@@ -4518,8 +4706,10 @@ World\t世界
               <Select
                 labelId="bilingual-format-label"
                 label="解析格式"
-                value={format}
+                value={dualMode ? 'tab_split' : format}
+                disabled={dualMode}
                 onChange={(e) => setFormat(e.target.value as BilingualFormat)}
+                renderValue={dualMode ? () => '双列模式：按行号自动对齐' : undefined}
               >
                 {(Object.keys(FORMAT_LABELS) as BilingualFormat[]).map((k) => (
                   <MenuItem key={k} value={k}>{FORMAT_LABELS[k]}</MenuItem>
@@ -4537,6 +4727,31 @@ World\t世界
 
             <Button variant="contained" onClick={doParse} startIcon={<SyncIcon />}>
               解析对齐
+            </Button>
+            <Button
+              size="small"
+              onClick={() => {
+                if (dualMode) {
+                  if (tab === 'paste') {
+                    setPasteSrcText(''); setPasteTgtText('')
+                  } else {
+                    setSrcFileName(''); setSrcFileText(''); setTgtFileName(''); setTgtFileText('')
+                    if (srcFileInputRef.current) srcFileInputRef.current.value = ''
+                    if (tgtFileInputRef.current) tgtFileInputRef.current.value = ''
+                  }
+                } else {
+                  if (tab === 'paste') {
+                    setPasteText('')
+                  } else {
+                    setFileName(''); setFileText('')
+                    if (fileInputRef.current) fileInputRef.current.value = ''
+                  }
+                }
+                setRows([]); setPreviewDupHint(null)
+              }}
+              startIcon={<ClearAllIcon />}
+            >
+              清空
             </Button>
 
             <Box sx={{ flex: 1 }} />
@@ -4557,6 +4772,7 @@ World\t世界
               预检出可导入 {stats.valid} 对 → 新增 {previewDupHint.add} 条，已存在更新 {previewDupHint.dup} 条（语言对 {sourceLang ?? 'en'}→{targetLang ?? 'zh-CN'}）
             </Alert>
           )}
+          </Collapse>
         </Paper>
 
         <Paper elevation={1} sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
@@ -4578,6 +4794,20 @@ World\t世界
               <Chip size="small" color="default" variant="outlined" label={`重复 ${stats.dups}`} />
             )}
             <Box sx={{ flex: 1 }} />
+            <Button
+              size="small"
+              color="error"
+              startIcon={<DeleteOutlineOutlinedIcon />}
+              disabled={stats.selected === 0}
+              onClick={() => {
+                const before = rows.length
+                setRows((rs) => rs.filter((r) => !r.selected))
+                const removed = before - rows.filter((r) => !r.selected).length
+                notify('info', `已删除 ${removed} 行勾选的语料`)
+              }}
+            >
+              删除勾选 ({stats.selected})
+            </Button>
             <FormControlLabel
               control={
                 <Checkbox

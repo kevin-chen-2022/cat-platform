@@ -14,14 +14,23 @@ import {
   LinearProgress,
   Alert,
   IconButton,
+  Chip,
+  Stack,
 } from '@mui/material'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
 import CloseIcon from '@mui/icons-material/Close'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import ErrorIcon from '@mui/icons-material/Error'
+import CheckIcon from '@mui/icons-material/Check'
 import type { ReactElement } from 'react'
 import type { ParseGranularity } from '@/types'
 import { useProjectStore } from '@app/store'
+
+interface ImportResult {
+  name: string
+  ok: boolean
+  message: string
+}
 
 interface Props {
   open: boolean
@@ -30,17 +39,21 @@ interface Props {
 
 export function ImportFileDialog({ open, onClose }: Props): ReactElement | null {
   const inputRef = useRef<HTMLInputElement>(null)
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [granularity, setGranularity] = useState<ParseGranularity>('paragraph')
+  const [batchResults, setBatchResults] = useState<ImportResult[]>([])
+  const [batchRunning, setBatchRunning] = useState(false)
 
   const importFile = useProjectStore((s) => s.importFile)
   const importProgress = useProjectStore((s) => s.importProgress)
   const notify = useProjectStore as any
 
-  const isWorking = importProgress.stage === 'parsing' || importProgress.stage === 'saving'
+  const isWorking = batchRunning || importProgress.stage === 'parsing' || importProgress.stage === 'saving'
 
   const reset = () => {
-    setSelectedFile(null)
+    setSelectedFiles([])
+    setBatchResults([])
+    setBatchRunning(false)
     useProjectStore.setState({ importProgress: { stage: 'idle', message: '' } })
   }
 
@@ -51,9 +64,11 @@ export function ImportFileDialog({ open, onClose }: Props): ReactElement | null 
   }
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]
-    if (f) {
-      setSelectedFile(f)
+    const files = e.target.files
+    if (files && files.length > 0) {
+      const arr = Array.from(files)
+      setSelectedFiles(arr)
+      setBatchResults([])
       // 选择新文件时重置导入状态，让"开始导入"按钮恢复可用
       useProjectStore.setState({ importProgress: { stage: 'idle', message: '' } })
     }
@@ -62,8 +77,42 @@ export function ImportFileDialog({ open, onClose }: Props): ReactElement | null 
   }
 
   const handleImport = async () => {
-    if (!selectedFile) return
-    await importFile(selectedFile, granularity)
+    if (selectedFiles.length === 0) return
+    setBatchRunning(true)
+    setBatchResults([])
+    const results: ImportResult[] = []
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const f = selectedFiles[i]
+      try {
+        useProjectStore.setState({
+          importProgress: {
+            stage: 'parsing',
+            message: `（${i + 1}/${selectedFiles.length}）正在解析：${f.name}`,
+            page: 0,
+            totalPages: 1,
+          },
+        })
+        await importFile(f, granularity)
+        const stage = useProjectStore.getState().importProgress.stage
+        if (stage === 'error') {
+          results.push({ name: f.name, ok: false, message: useProjectStore.getState().importProgress.message })
+        } else {
+          results.push({ name: f.name, ok: true, message: '导入成功' })
+        }
+      } catch (err) {
+        results.push({ name: f.name, ok: false, message: (err as Error).message || '未知错误' })
+      }
+    }
+    setBatchResults(results)
+    setBatchRunning(false)
+    const success = results.filter((r) => r.ok).length
+    const fail = results.length - success
+    if (results.length > 1) {
+      notify(
+        fail === 0 ? 'success' : fail === success ? 'warning' : fail > success ? 'error' : 'warning',
+        `批量导入完成：成功 ${success} 个，失败 ${fail} 个`,
+      )
+    }
   }
 
   const progressPct =
@@ -91,6 +140,7 @@ export function ImportFileDialog({ open, onClose }: Props): ReactElement | null 
           <input
             ref={inputRef}
             type="file"
+            multiple
             accept=".pdf,.txt,.md,.markdown,.docx,.doc"
             onChange={handleFileChange}
             style={{ display: 'none' }}
@@ -102,12 +152,27 @@ export function ImportFileDialog({ open, onClose }: Props): ReactElement | null 
             disabled={isWorking}
             fullWidth
           >
-            {selectedFile ? `已选：${selectedFile.name}` : '选择文件 (PDF / DOCX / TXT / MD)'}
+            {selectedFiles.length > 0
+              ? selectedFiles.length === 1
+                ? `已选：${selectedFiles[0].name}`
+                : `已选 ${selectedFiles.length} 个文件`
+              : '选择文件 (PDF / DOCX / TXT / MD，支持多选)'}
           </Button>
-          {selectedFile && (
-            <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
-              大小：{(selectedFile.size / 1024).toFixed(1)} KB · 类型：{selectedFile.name.split('.').pop()?.toUpperCase()}
-            </Typography>
+          {selectedFiles.length > 0 && (
+            <Box sx={{ mt: 1 }}>
+              {selectedFiles.length === 1 ? (
+                <Typography variant="caption" color="text.secondary">
+                  大小：{(selectedFiles[0].size / 1024).toFixed(1)} KB · 类型：
+                  {selectedFiles[0].name.split('.').pop()?.toUpperCase()}
+                </Typography>
+              ) : (
+                <Stack direction="row" spacing={0.75} useFlexGap sx={{ flexWrap: 'wrap' }}>
+                  {selectedFiles.map((f, i) => (
+                    <Chip key={i} size="small" variant="outlined" label={f.name} />
+                  ))}
+                </Stack>
+              )}
+            </Box>
           )}
         </Box>
 
@@ -122,7 +187,25 @@ export function ImportFileDialog({ open, onClose }: Props): ReactElement | null 
           </RadioGroup>
         </FormControl>
 
-        {importProgress.stage !== 'idle' && (
+        {batchResults.length > 0 && (
+          <Stack spacing={0.5} sx={{ mt: 2, mb: 2 }}>
+            <Typography variant="caption" color="text.secondary">
+              批量导入结果
+            </Typography>
+            {batchResults.map((r, i) => (
+              <Alert
+                key={i}
+                severity={r.ok ? 'success' : 'error'}
+                icon={r.ok ? <CheckIcon fontSize="inherit" /> : <ErrorIcon fontSize="inherit" />}
+                sx={{ py: 0.5 }}
+              >
+                {r.name} — {r.message}
+              </Alert>
+            ))}
+          </Stack>
+        )}
+
+        {(importProgress.stage !== 'idle' || batchRunning) && (
           <Box sx={{ mt: 2 }}>
             {importProgress.stage === 'parsing' && (
               <>
@@ -140,7 +223,7 @@ export function ImportFileDialog({ open, onClose }: Props): ReactElement | null 
                 <LinearProgress />
               </>
             )}
-            {importProgress.stage === 'done' && (
+            {importProgress.stage === 'done' && selectedFiles.length <= 1 && (
               <Alert severity="success" icon={<CheckCircleIcon />} sx={{ py: 0.5 }}>
                 {importProgress.message}
               </Alert>
@@ -155,14 +238,20 @@ export function ImportFileDialog({ open, onClose }: Props): ReactElement | null 
       </DialogContent>
       <DialogActions>
         <Button onClick={handleClose} disabled={isWorking}>
-          {importProgress.stage === 'done' ? '关闭' : '取消'}
+          {importProgress.stage === 'done' || batchResults.length > 0 ? '关闭' : '取消'}
         </Button>
         <Button
           onClick={handleImport}
           variant="contained"
-          disabled={!selectedFile || isWorking || importProgress.stage === 'done'}
+          disabled={
+            selectedFiles.length === 0 ||
+            isWorking ||
+            (importProgress.stage === 'done' && batchResults.length === 0)
+          }
         >
-          开始导入
+          {selectedFiles.length > 1
+            ? `批量导入 ${selectedFiles.length} 个文件`
+            : '开始导入'}
         </Button>
       </DialogActions>
     </Dialog>

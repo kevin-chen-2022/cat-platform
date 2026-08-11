@@ -20,7 +20,7 @@ import { useAiQAStore } from './aiQA'
 import { useMachineTranslationStore } from './machineTranslation'
 import { useDictionaryStore } from './dictionary'
 import { useEditorContextStore } from './editorContext'
-import { needsTranslation } from '@/shared/utils/segmentFilter'
+import { needsTranslation, htmlToPlainText } from '@/shared/utils/segmentFilter'
 
 // ---- 事件类型 ----
 export type LinkageEvent = 'segmentActivated' | 'sourceSelected' | 'targetSelected'
@@ -249,13 +249,13 @@ interface ReverseLinkageRule {
   action: () => boolean
 }
 
-/** 辅助：读当前激活段的原文 */
+/** 辅助：读当前激活段的原文（纯文本，去除富文本标签） */
 function readActiveSource(): { segmentId: ID | null; source: string } {
   const p = useProjectStore.getState()
   const id = p.activeSegmentId
   if (id == null) return { segmentId: null, source: '' }
   const seg = p.segments.find((s) => s.id === id)
-  return { segmentId: id, source: seg?.source ?? '' }
+  return { segmentId: id, source: htmlToPlainText(seg?.source ?? '') }
 }
 
 /** 辅助：读当前原文选中文本 + 整段原文上下文 */
@@ -279,7 +279,7 @@ function reverseAiTranslate(): boolean {
   const id = p.activeSegmentId
   if (id == null) return false
   const seg = p.segments.find((s) => s.id === id)
-  const text = (seg?.source ?? '').trim()
+  const text = htmlToPlainText(seg?.source ?? '').trim()
   if (!text) return false
   // 反向联动过滤：仅需要翻译的段落才自动触发 AI 翻译，避免覆盖已有译文
   if (seg && !needsTranslation(seg)) return false
@@ -306,7 +306,7 @@ function reverseMT(): boolean {
   const id = p.activeSegmentId
   if (id == null) return false
   const seg = p.segments.find((s) => s.id === id)
-  const text = (seg?.source ?? '').trim()
+  const text = htmlToPlainText(seg?.source ?? '').trim()
   if (!text) return false
   // 反向联动过滤：仅需要翻译的段落才自动触发机器翻译，避免覆盖已有译文
   if (seg && !needsTranslation(seg)) return false

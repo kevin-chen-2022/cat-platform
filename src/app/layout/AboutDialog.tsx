@@ -170,8 +170,8 @@ const USAGE_SECTIONS: Array<{
           { name: '翻译记忆', desc: '管理和查询翻译记忆库。系统自动保存已译段落，翻译时自动匹配相似句对。支持手动增删、批量导入导出（Excel/CSV/JSON/TXT）、复制导入。原文译文过长时自动折叠，点击展开。' },
           { name: '片段搜索', desc: '在全部翻译段中搜索原文或译文关键词，快速定位段落。结果过长时自动折叠，点击展开。' },
           { name: '术语显示', desc: '展示当前原文命中的术语条目，高亮匹配内容。支持术语的增删改查。' },
-          { name: '机器翻译', desc: '集成百度、有道、彩云等多个机器翻译引擎。支持正向联动（点击段落自动翻译）和反向联动。' },
-          { name: 'AI 翻译', desc: '基于大语言模型（DeepSeek / 豆包 / 通义 / 智谱）的智能翻译。支持自定义 Prompt、术语套用（自动注入命中术语）、批量自动翻译。' },
+          { name: '机器翻译', desc: '集成百度、有道、彩云等多个机器翻译引擎。支持源/目标语言选择（默认跟随项目语言对，可手动调整并一键交换），支持正向联动（点击段落自动翻译）和反向联动。' },
+          { name: 'AI 翻译', desc: '基于大语言模型（DeepSeek / 豆包 / 通义 / 智谱）的智能翻译。支持源/目标语言选择（默认跟随项目语言对，可手动调整并一键交换）、自定义 Prompt、术语套用（自动注入命中术语）、批量自动翻译。' },
           { name: 'AI 问答', desc: '向 AI 提问翻译相关问题，支持上下文对话、原文语境引用。结果以 Markdown 渲染。' },
           { name: 'QA 质检', desc: '自动检测翻译质量问题，如术语一致性、数字标点、漏译等。' },
           { name: '项目词典库', desc: '项目级术语库管理，独立于全局术语库，随项目导入导出。' },
@@ -275,7 +275,7 @@ const USAGE_SECTIONS: Array<{
           desc="打开 / 关闭查找替换栏"
         />
         <ShortcutRow
-          keys={<><Kbd>Ctrl/Cmd</Kbd>+<Kbd>↓</Kbd></>}
+          keys={<><Kbd>Ctrl/Cmd</Kbd>+<Kbd>Shift</Kbd>+<Kbd>Enter</Kbd></>}
           desc="跳至下个未译段落"
         />
         <ShortcutRow
@@ -294,7 +294,15 @@ const USAGE_SECTIONS: Array<{
         <ShortcutGroupTitle>译文编辑（焦点在译文输入框时）</ShortcutGroupTitle>
         <ShortcutRow
           keys={<><Kbd>Enter</Kbd></>}
-          desc="提交译文并跳到下一段"
+          desc="提交译文（草稿）并跳到下一段"
+        />
+        <ShortcutRow
+          keys={<><Kbd>Ctrl/Cmd</Kbd>+<Kbd>Enter</Kbd></>}
+          desc="标记为已译并跳到下一段"
+        />
+        <ShortcutRow
+          keys={<><Kbd>Ctrl/Cmd</Kbd>+<Kbd>Shift</Kbd>+<Kbd>Enter</Kbd></>}
+          desc="标记为已译并跳到下个未译段"
         />
         <ShortcutRow
           keys={<><Kbd>Tab</Kbd></>}
@@ -303,10 +311,6 @@ const USAGE_SECTIONS: Array<{
         <ShortcutRow
           keys={<><Kbd>Shift</Kbd>+<Kbd>Tab</Kbd></>}
           desc="提交并跳到上一段"
-        />
-        <ShortcutRow
-          keys={<><Kbd>Ctrl/Cmd</Kbd>+<Kbd>↓</Kbd></>}
-          desc="提交并跳到下个未译段"
         />
         <ShortcutRow
           keys={<><Kbd>Esc</Kbd></>}
@@ -427,7 +431,7 @@ const USAGE_SECTIONS: Array<{
         <Box sx={{ mb: 2 }}>
           <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>机器翻译</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
-            机器翻译支持网页模式（百度、有道、QQ、阿里巴巴、搜狗、爱词霸）和 API 模式（百度翻译 API、彩云小译 API）。在「设置」中切换模式并配置相应的密钥。
+            机器翻译支持网页模式（百度、有道、QQ、阿里巴巴、搜狗、爱词霸）和 API 模式（百度翻译 API、彩云小译 API）。在「设置」中切换模式并配置相应的密钥。机器翻译面板提供源/目标语言选择，默认读取当前项目的语言对，可临时手动调整或点击切换按钮交换语言对，仅影响当前翻译，不修改项目设置。
           </Typography>
         </Box>
         <Box sx={{ mb: 2 }}>

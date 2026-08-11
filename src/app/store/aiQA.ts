@@ -107,6 +107,61 @@ export const AI_TRANSLATE_SYSTEM_PROMPT = `你是一名专业的翻译专家。�
 3. 术语统一，符合目标语言的表达习惯，不生硬直译。
 4. 如果有上下文或领域说明，结合该语境选择最合适的义项。`
 
+/** AI 翻译预设风格模板：点击 Chip 即加载对应完整 system prompt */
+export interface TranslatePreset {
+  key: string
+  label: string
+  prompt: string
+}
+
+export const TRANSLATE_PRESETS: TranslatePreset[] = [
+  {
+    key: 'general',
+    label: '通用',
+    prompt: AI_TRANSLATE_SYSTEM_PROMPT,
+  },
+  {
+    key: 'it',
+    label: 'IT科技',
+    prompt: `你是一名专注于 IT 科技领域的专业翻译专家。请将用户提供的源语言文本准确翻译成目标语言文本。
+要求：
+1. 只输出翻译结果本身，不要添加任何解释、说明、前后缀或额外内容。
+2. 技术术语使用业界通行的中文译法（如无通用译法则保留原文）。
+3. 代码片段、命令行、变量名、API 名称等技术标识保持原文不翻译。
+4. 保持原文的标点、换行风格，符合目标语言技术文档的表达习惯。`,
+  },
+  {
+    key: 'legal',
+    label: '法律合同',
+    prompt: `你是一名精通法律合同翻译的专业译员。请将用户提供的源语言文本准确翻译成目标语言文本。
+要求：
+1. 只输出翻译结果本身，不要添加任何解释、说明或额外内容。
+2. 法律术语使用严谨、规范的对应译法，保持法律效力的一致性。
+3. 条款编号、引用条文格式保持原文不变。
+4. 语言正式、庄重，使用书面法律用语，避免口语化表达。`,
+  },
+  {
+    key: 'medical',
+    label: '医学论文',
+    prompt: `你是一名医学翻译专家，熟悉循证医学和学术论文规范。请将用户提供的源语言文本准确翻译成目标语言文本。
+要求：
+1. 只输出翻译结果本身，不要添加任何解释、说明或额外内容。
+2. 医学术语使用规范的中文译法，拉丁学名、药物国际非专利名（INN）保留原文。
+3. 数据、单位、统计符号保持原文格式不变。
+4. 语言严谨、客观，符合医学学术论文的表达风格。`,
+  },
+  {
+    key: 'literary',
+    label: '文学',
+    prompt: `你是一名文学翻译家，注重译文的语言美感和风格还原。请将用户提供的源语言文本翻译成目标语言文本。
+要求：
+1. 只输出翻译结果本身，不要添加任何解释、说明或额外内容。
+2. 在准确传达原文含义的基础上，追求译文的流畅性和文学性。
+3. 保留原文的修辞手法、语气和情感色彩。
+4. 意译优先于直译，使译文符合目标语言的文学表达习惯。`,
+  },
+]
+
 interface AiQAState {
   mode: AiQaMode
   /** 各提供商配置（AI问答 / AI翻译 共用） */
@@ -126,8 +181,6 @@ interface AiQAState {
   translateTgt: string
   /** AI 翻译：时间戳，触发重新翻译 */
   translateTimestamp: number
-  /** AI 翻译：领域/风格说明（可选），用于拼入 system prompt 最后一段 */
-  translateDomain: string
   /** AI 翻译：用户可编辑的系统 Prompt（持久化），默认 AI_TRANSLATE_SYSTEM_PROMPT */
   translateSystemPrompt: string
   /** AI 问答：用户可编辑的系统 Prompt（持久化），默认 AI_EXPLAIN_SYSTEM_PROMPT */
@@ -139,7 +192,7 @@ interface AiQAState {
   setProvider: (k: AiProviderKey, patch: Partial<AiProviderCfg>) => void
   toggleProvider: (k: AiProviderKey) => void
   setQuery: (text: string, context?: string) => void
-  setTranslate: (patch: Partial<{ text: string; src: string; tgt: string; domain: string }>) => void
+  setTranslate: (patch: Partial<{ text: string; src: string; tgt: string }>) => void
   /** 设置 AI 翻译系统 Prompt（持久化） */
   setTranslateSystemPrompt: (prompt: string) => void
   /** 设置 AI 问答系统 Prompt（持久化） */
@@ -208,7 +261,6 @@ export const useAiQAStore = create<AiQAState>((set, get) => ({
   translateSrc: 'auto',
   translateTgt: '',
   translateTimestamp: 0,
-  translateDomain: '',
   translateSystemPrompt: initial.translateSystemPrompt ?? AI_TRANSLATE_SYSTEM_PROMPT,
   aiqaSystemPrompt: initial.aiqaSystemPrompt ?? AI_EXPLAIN_SYSTEM_PROMPT,
   applyTermsInTranslate: initial.applyTermsInTranslate ?? true,
@@ -232,12 +284,11 @@ export const useAiQAStore = create<AiQAState>((set, get) => ({
   },
   setTranslate: (patch) => {
     const shouldTick =
-      patch.text !== undefined || patch.src !== undefined || patch.tgt !== undefined || patch.domain !== undefined
+      patch.text !== undefined || patch.src !== undefined || patch.tgt !== undefined
     set({
       translateText: patch.text ?? get().translateText,
       translateSrc: patch.src ?? get().translateSrc,
       translateTgt: patch.tgt ?? get().translateTgt,
-      translateDomain: patch.domain ?? get().translateDomain,
       translateTimestamp: shouldTick ? Date.now() : get().translateTimestamp,
     })
   },
@@ -255,15 +306,28 @@ export const useAiQAStore = create<AiQAState>((set, get) => ({
   },
 }))
 
+/** 单次 AI 调用的 token 消耗（OpenAI 兼容格式） */
+export interface TokenUsage {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+}
+
+/** callAiChat 返回值：翻译/回答内容 + token 消耗（部分 provider 可能不返回 usage） */
+export interface AiChatResult {
+  content: string
+  usage?: TokenUsage
+}
+
 /**
  * 调用兼容 OpenAI ChatCompletions 的 provider API。
- * 非流式，返回纯文本。支持根据各 provider 约束（temperature 范围、是否发送 stream 等）做兼容。
+ * 非流式，返回内容 + token 消耗。支持根据各 provider 约束（temperature 范围、是否发送 stream 等）做兼容。
  */
 export async function callAiChat(
   provider: AiProviderKey,
   cfg: AiProviderCfg,
   messages: { role: 'system' | 'user' | 'assistant'; content: string }[],
-): Promise<string> {
+): Promise<AiChatResult> {
   const meta = AI_PROVIDER_META[provider]
   const base = cfg.baseUrl || meta.defaultBaseUrl
   // 模型优先用用户自定义；否则用 meta.default（豆包 defaultModel 为空，此时要求用户填入 Endpoint ID）
@@ -327,5 +391,7 @@ export async function callAiChat(
   const data = await res.json()
   const content: string | undefined = data?.choices?.[0]?.message?.content
   if (!content) throw new Error(`${meta.label} 返回为空。请检查模型参数（${meta.constraints?.modelMustBeEndpointId ? '需填 Endpoint ID' : '模型名'}）是否正确。`)
-  return content
+  // 提取 token 消耗（OpenAI 兼容格式，部分 provider 可能不返回）
+  const usage = data?.usage as TokenUsage | undefined
+  return { content, usage }
 }

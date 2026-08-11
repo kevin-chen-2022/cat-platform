@@ -8,6 +8,7 @@ import {
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   Select, MenuItem, FormControl, InputLabel, Chip, Alert,
   Menu, Popover, ListItemIcon, ListItemText, Collapse, Switch,
+  Autocomplete,
 } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import ExpandLessIcon from '@mui/icons-material/ExpandLess'
@@ -21,6 +22,7 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import AssessmentIcon from '@mui/icons-material/Assessment'
 import SettingsIcon from '@mui/icons-material/Settings'
 import TranslateIcon from '@mui/icons-material/Translate'
+import SwapHorizIcon from '@mui/icons-material/SwapHoriz'
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks'
 import FolderIcon from '@mui/icons-material/Folder'
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined'
@@ -52,13 +54,14 @@ import {
   useMachineTranslationStore,
   MT_WEB_URL, MT_WEB_LABEL, MT_API_LABEL, MT_EMBED_UNSUPPORTED,
   useAiQAStore,
-  AI_PROVIDER_META, AI_EXPLAIN_SYSTEM_PROMPT, AI_TRANSLATE_SYSTEM_PROMPT, AI_WEB_EMBED_UNSUPPORTED, callAiChat,
+  AI_PROVIDER_META, AI_EXPLAIN_SYSTEM_PROMPT, AI_TRANSLATE_SYSTEM_PROMPT, TRANSLATE_PRESETS, AI_WEB_EMBED_UNSUPPORTED, callAiChat,
   useLinkageTMStore, useLinkageFragmentSearchStore,
   useTMStore,
   useUiAppearanceStore,
   FONT_PRESETS, DEFAULT_FONT_SIZE, MIN_FONT_SIZE, MAX_FONT_SIZE,
+  COMMON_LANGUAGES, toBaiduLang, toCaiyunTransType,
 } from '@app/store'
-import type { OnlineDictState, LocalDictState, MtWebState, MtApiState, AiProviderKey, AiProviderMeta, Term } from '@app/store'
+import type { OnlineDictState, LocalDictState, MtWebState, MtApiState, AiProviderKey, AiProviderMeta, Term, TokenUsage, LangOption } from '@app/store'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import SmartToyIcon from '@mui/icons-material/SmartToy'
 import AutoAwesomeMotionIcon from '@mui/icons-material/AutoAwesomeMotion'
@@ -626,6 +629,39 @@ export function MTPanel(): ReactElement {
   const api = useMachineTranslationStore((s) => s.api)
   const queryText = useMachineTranslationStore((s) => s.queryText)
   const queryTimestamp = useMachineTranslationStore((s) => s.queryTimestamp)
+  const storeSrc = useMachineTranslationStore((s) => s.srcLang)
+  const storeTgt = useMachineTranslationStore((s) => s.tgtLang)
+  const setLang = useMachineTranslationStore((s) => s.setLang)
+
+  // 当前项目的 sourceLang / targetLang，作为默认语言对（响应项目切换）
+  const currentProjectId = useProjectStore((s) => s.currentProjectId)
+  const projects = useProjectStore((s) => s.projects)
+  const projectLang = useMemo(() => {
+    const cur = projects.find((p) => p.id === currentProjectId)
+    return cur ? { src: cur.sourceLang, tgt: cur.targetLang } : null
+  }, [projects, currentProjectId])
+
+  // 本地语言对：项目语言优先，其次 store 持久值，最后默认 en → zh-CN
+  const [inputSrc, setInputSrc] = useState(projectLang?.src ?? storeSrc ?? 'auto')
+  const [inputTgt, setInputTgt] = useState(projectLang?.tgt ?? storeTgt ?? 'zh-CN')
+  // 项目切换时跟随项目语言对（用户可临时手改，仅影响当前翻译）
+  useEffect(() => {
+    if (projectLang) {
+      setInputSrc(projectLang.src)
+      setInputTgt(projectLang.tgt)
+    }
+  }, [projectLang])
+
+  const onSrcChange = (v: string) => { setInputSrc(v); setLang(v, inputTgt) }
+  const onTgtChange = (v: string) => { setInputTgt(v); setLang(inputSrc, v) }
+  // 交换源/目标语言对（同步本地与持久化）
+  const swapLangs = () => {
+    const newSrc = inputTgt
+    const newTgt = inputSrc
+    setInputSrc(newSrc)
+    setInputTgt(newTgt)
+    setLang(newSrc, newTgt)
+  }
 
   // 输入框文本
   const [inputText, setInputText] = useState('')
@@ -674,17 +710,17 @@ export function MTPanel(): ReactElement {
         let result = ''
         if (key === 'baidu') {
           const cfg = apiState.baidu
-          result = await translateByBaidu(text, cfg.appId, cfg.secret)
+          result = await translateByBaidu(text, cfg.appId, cfg.secret, inputSrc, inputTgt)
         } else if (key === 'caiyun') {
           const cfg = apiState.caiyun
-          result = await translateByCaiyun(text, cfg.token)
+          result = await translateByCaiyun(text, cfg.token, inputSrc, inputTgt)
         }
         setApiResults((prev) => ({ ...prev, [key]: { loading: false, result, error: '' } }))
       } catch (e: any) {
         setApiResults((prev) => ({ ...prev, [key]: { loading: false, result: '', error: e?.message || String(e) } }))
       }
     },
-    [],
+    [inputSrc, inputTgt],
   )
 
   // 当 queryText 变化且为 API 模式时，自动翻译所有已启用的 API
@@ -711,6 +747,27 @@ export function MTPanel(): ReactElement {
         </Typography>
       </Stack>
       <Divider sx={{ mb: 1 }} />
+
+      {/* 语言对选择（默认跟随项目，可临时手改） */}
+      <Stack direction="row" spacing={1} sx={{ mb: 1, alignItems: 'center' }}>
+        <LangAutocomplete
+          label="源语言"
+          value={inputSrc}
+          onChange={onSrcChange}
+          placeholder={projectLang?.src ?? 'auto'}
+        />
+        <Tooltip title="交换源/目标语言">
+          <IconButton size="small" onClick={swapLangs} sx={{ p: 0.5 }}>
+            <SwapHorizIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <LangAutocomplete
+          label="目标语言"
+          value={inputTgt}
+          onChange={onTgtChange}
+          placeholder={projectLang?.tgt ?? 'zh-CN'}
+        />
+      </Stack>
 
       {/* 文本输入区 */}
       <TextField
@@ -785,7 +842,7 @@ export function MTPanel(): ReactElement {
               {activeWebKey && MT_EMBED_UNSUPPORTED.has(activeWebKey) ? (
                 <UnsupportedEmbedView
                   label={MT_WEB_LABEL[activeWebKey]}
-                  url={MT_WEB_URL[activeWebKey](activeText.trim())}
+                  url={MT_WEB_URL[activeWebKey](activeText.trim(), inputSrc, inputTgt)}
                 />
               ) : (
                 <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -799,7 +856,7 @@ export function MTPanel(): ReactElement {
                     <Tooltip title="在新窗口打开">
                       <IconButton
                         size="small"
-                        href={activeWebKey ? MT_WEB_URL[activeWebKey](activeText.trim()) : '#'}
+                        href={activeWebKey ? MT_WEB_URL[activeWebKey](activeText.trim(), inputSrc, inputTgt) : '#'}
                         target="_blank"
                         rel="noopener noreferrer"
                         sx={{ p: 0.25 }}
@@ -811,7 +868,7 @@ export function MTPanel(): ReactElement {
                   <Box sx={{ flex: 1, minHeight: 0, border: 1, borderColor: 'divider', borderTop: 0 }}>
                     <iframe
                       key={`${activeWebKey}-${activeText}`}
-                      src={activeWebKey ? MT_WEB_URL[activeWebKey](activeText.trim()) : ''}
+                      src={activeWebKey ? MT_WEB_URL[activeWebKey](activeText.trim(), inputSrc, inputTgt) : ''}
                       title={activeWebKey ? MT_WEB_LABEL[activeWebKey] : ''}
                       style={{ width: '100%', height: '100%', border: 'none' }}
                       sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
@@ -925,11 +982,15 @@ function UnsupportedEmbedView({ label, url }: { label: string; url: string }): R
 
 // —— 百度翻译 API（浏览器直连，MD5 签名）——
 // 文档：https://fanyi-api.baidu.com/doc/21
-async function translateByBaidu(text: string, appId: string, secret: string): Promise<string> {
+async function translateByBaidu(text: string, appId: string, secret: string, src: string, tgt: string): Promise<string> {
   if (!appId || !secret) throw new Error('未配置百度翻译 AppID 或密钥')
+  const from = toBaiduLang(src)
+  const to = toBaiduLang(tgt)
+  // 百度目标语言不支持 auto
+  if (to === 'auto') throw new Error('百度翻译目标语言不能为「自动检测」')
   const salt = String(Date.now())
   const sign = await md5Hex(`${appId}${text}${salt}${secret}`)
-  const url = `https://fanyi-api.baidu.com/api/trans/vip/translate?q=${encodeURIComponent(text)}&from=en&to=zh&appid=${appId}&salt=${salt}&sign=${sign}`
+  const url = `https://fanyi-api.baidu.com/api/trans/vip/translate?q=${encodeURIComponent(text)}&from=${from}&to=${to}&appid=${appId}&salt=${salt}&sign=${sign}`
   const res = await fetch(url)
   const data = await res.json()
   if (data.error_code) throw new Error(`百度[${data.error_code}] ${data.error_msg}`)
@@ -939,8 +1000,10 @@ async function translateByBaidu(text: string, appId: string, secret: string): Pr
 
 // —— 彩云小译 API（浏览器直连，token 认证）——
 // 文档：https://docs.caiyunapp.com/docs/lingocloud-api
-async function translateByCaiyun(text: string, token: string): Promise<string> {
+async function translateByCaiyun(text: string, token: string, src: string, tgt: string): Promise<string> {
   if (!token) throw new Error('未配置彩云小译 token')
+  const transType = toCaiyunTransType(src, tgt)
+  if (!transType) throw new Error('彩云小译不支持该语言对（仅支持 en/zh/ja/ko/fr/de/es/ru/it 之间的互译）')
   const url = 'https://api.interpreter.caiyunai.com/v1/translator'
   const res = await fetch(url, {
     method: 'POST',
@@ -950,7 +1013,7 @@ async function translateByCaiyun(text: string, token: string): Promise<string> {
     },
     body: JSON.stringify({
       source: [text],
-      trans_type: 'en2zh',
+      trans_type: transType,
       request_id: 'cat-web',
       detect: true,
     }),
@@ -3358,6 +3421,50 @@ function EmptyHint({ text }: { text: string }): ReactElement {
   )
 }
 
+/** 通用代码 → 显示名 映射（用于下拉选项展示） */
+const LANG_CODE_LABEL: Record<string, string> = Object.fromEntries(
+  COMMON_LANGUAGES.map((o) => [o.code, o.label]),
+)
+
+/**
+ * 语言选择 Autocomplete：支持从常用语言下拉选择，也支持自由输入自定义代码。
+ * 输入框显示语言代码（如 en / zh-CN），下拉项显示「代码 + 中文名」。
+ */
+function LangAutocomplete({
+  label, value, onChange, placeholder,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+}): ReactElement {
+  return (
+    <Autocomplete
+      size="small"
+      freeSolo
+      options={COMMON_LANGUAGES.map((o) => o.code)}
+      value={value}
+      onChange={(_, v) => onChange(typeof v === 'string' ? v : (v ?? ''))}
+      onInputChange={(_, v, reason) => {
+        // freeSolo 下用户清空或手动输入时同步
+        if (reason === 'input' || reason === 'clear') onChange(v ?? '')
+      }}
+      renderOption={(props, code) => (
+        <li {...props}>
+          <Typography component="span" variant="body2" sx={{ fontFamily: 'monospace', minWidth: 56 }}>{code}</Typography>
+          <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+            {LANG_CODE_LABEL[code] ?? ''}
+          </Typography>
+        </li>
+      )}
+      renderInput={(params) => (
+        <TextField {...params} label={label} placeholder={placeholder} />
+      )}
+      sx={{ flex: '1 1 120px', minWidth: 120 }}
+    />
+  )
+}
+
 /**
  * 把文本粘贴到双语编辑器当前激活段的译文（模拟 Ctrl+V 效果）。
  * - 仅当译文处于编辑状态（targetSelection 或 targetCursor 存在且匹配当前段）时才操作
@@ -3446,8 +3553,8 @@ export function AIQAPanel(): ReactElement {
   // 输入区折叠开关（默认折叠，减少视觉干扰；结果自动呈现）
   const [showInputs, setShowInputs] = useState(false)
 
-  // 各 provider 的回答状态
-  const [answers, setAnswers] = useState<Record<string, { loading: boolean; result: string; error: string }>>({})
+  // 各 provider 的回答状态（含 token 消耗）
+  const [answers, setAnswers] = useState<Record<string, { loading: boolean; result: string; error: string; usage?: TokenUsage }>>({})
 
   // 系统 Prompt 持久化到 store（刷新不丢失）
   const systemPrompt = useAiQAStore((s) => s.aiqaSystemPrompt)
@@ -3480,8 +3587,8 @@ export function AIQAPanel(): ReactElement {
           { role: 'system', content: sysPrompt },
           { role: 'user', content: buildUserMessage(text, ctx, custom) },
         ]
-        const result = await callAiChat(k, providers[k], messages)
-        setAnswers((prev) => ({ ...prev, [k]: { loading: false, result, error: '' } }))
+        const { content, usage } = await callAiChat(k, providers[k], messages)
+        setAnswers((prev) => ({ ...prev, [k]: { loading: false, result: content, error: '', usage } }))
       } catch (e: any) {
         setAnswers((prev) => ({ ...prev, [k]: { loading: false, result: '', error: e?.message || String(e) } }))
       }
@@ -3643,7 +3750,14 @@ export function AIQAPanel(): ReactElement {
                 return (
                   <Box key={k} sx={{ p: 1, border: 1, borderColor: 'divider', borderRadius: 1 }}>
                     <Stack direction="row" spacing={1} sx={{ alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
-                      <Typography variant="caption" color="text.secondary">{meta.label}</Typography>
+                      <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+                        <Typography variant="caption" color="text.secondary">{meta.label}</Typography>
+                        {a?.usage && (
+                          <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 10 }}>
+                            ↑{a.usage.prompt_tokens} ↓{a.usage.completion_tokens} 共{a.usage.total_tokens}
+                          </Typography>
+                        )}
+                      </Stack>
                       <Stack direction="row" spacing={0.25}>
                         <Tooltip title="发送到译文光标位置（选中文本优先，否则发送整体）">
                           <IconButton
@@ -3714,19 +3828,19 @@ export function AITranslatePanel(): ReactElement {
   const translateText = useAiQAStore((s) => s.translateText)
   const translateSrc = useAiQAStore((s) => s.translateSrc)
   const translateTgt = useAiQAStore((s) => s.translateTgt)
-  const translateDomain = useAiQAStore((s) => s.translateDomain)
   const translateTimestamp = useAiQAStore((s) => s.translateTimestamp)
   const setTranslate = useAiQAStore((s) => s.setTranslate)
   const applyTermsInTranslate = useAiQAStore((s) => s.applyTermsInTranslate)
   const setApplyTermsInTranslate = useAiQAStore((s) => s.setApplyTermsInTranslate)
   const terms = useTermStore((s) => s.terms)
 
-  // 当前项目的 sourceLang / targetLang，用来作为默认语言对
+  // 当前项目的 sourceLang / targetLang，作为默认语言对（响应项目切换）
+  const currentProjectId = useProjectStore((s) => s.currentProjectId)
+  const projects = useProjectStore((s) => s.projects)
   const projectLang = useMemo(() => {
-    const s = useProjectStore.getState()
-    const cur = s.projects.find((p) => p.id === s.currentProjectId)
+    const cur = projects.find((p) => p.id === currentProjectId)
     return cur ? { src: cur.sourceLang, tgt: cur.targetLang } : null
-  }, [])
+  }, [projects, currentProjectId])
 
   const pKeys = Object.keys(AI_PROVIDER_META) as AiProviderKey[]
   const activeProviders = useMemo(
@@ -3737,46 +3851,51 @@ export function AITranslatePanel(): ReactElement {
   // 输入区折叠开关（默认折叠，减少视觉干扰；结果自动呈现）
   const [showInputs, setShowInputs] = useState(false)
 
-  // 本地状态：文本、src、tgt、domain 本地输入
+  // 本地状态：文本、src、tgt 本地输入
   const [inputText, setInputText] = useState('')
   const [inputSrc, setInputSrc] = useState(projectLang?.src ?? translateSrc)
   const [inputTgt, setInputTgt] = useState(projectLang?.tgt ?? translateTgt)
-  const [inputDomain, setInputDomain] = useState(translateDomain)
 
-  // 语言变化或项目切换时，初始化 src/tgt（仅当用户未手动改）
+  // 项目切换时跟随项目语言对（用户可临时手改，仅影响当前翻译）
   useEffect(() => {
     if (projectLang) {
-      setInputSrc((prev) => (prev ? prev : projectLang.src))
-      setInputTgt((prev) => (prev ? prev : projectLang.tgt))
+      setInputSrc(projectLang.src)
+      setInputTgt(projectLang.tgt)
     }
   }, [projectLang])
+
+  // 交换源/目标语言对（仅改本地状态，不影响项目设置）
+  const swapLangs = () => {
+    const newSrc = inputTgt
+    const newTgt = inputSrc
+    setInputSrc(newSrc)
+    setInputTgt(newTgt)
+  }
 
   // 同步 store -> 本地（当「AI解释」按钮触发整段翻译时）
   useEffect(() => {
     if (translateText) setInputText(translateText)
     if (translateSrc) setInputSrc((prev) => (prev ? prev : translateSrc))
     if (translateTgt) setInputTgt((prev) => (prev ? prev : translateTgt))
-    if (translateDomain) setInputDomain(translateDomain)
-  }, [translateText, translateSrc, translateTgt, translateDomain, translateTimestamp])
+  }, [translateText, translateSrc, translateTgt, translateTimestamp])
 
   // 各 provider 结果状态
-  const [results, setResults] = useState<Record<string, { loading: boolean; result: string; error: string }>>({})
+  const [results, setResults] = useState<Record<string, { loading: boolean; result: string; error: string; usage?: TokenUsage }>>({})
 
   // 系统 Prompt 持久化到 store（刷新不丢失）
   const translateSystemPrompt = useAiQAStore((s) => s.translateSystemPrompt)
   const setTranslateSystemPrompt = useAiQAStore((s) => s.setTranslateSystemPrompt)
 
-  /** 组装 system prompt（追加语言对、可选领域） */
-  const buildSystemPrompt = useCallback((src: string, tgt: string, domain: string): string => {
+  /** 组装 system prompt（追加语言对） */
+  const buildSystemPrompt = useCallback((src: string, tgt: string): string => {
     const parts: string[] = [translateSystemPrompt]
     if (src && src.trim()) parts.push(`源语言标签：${src.trim()}`)
     if (tgt && tgt.trim()) parts.push(`目标语言标签：${tgt.trim()}`)
-    if (domain && domain.trim()) parts.push(`领域/风格说明：${domain.trim()}`)
     return parts.join('\n')
   }, [translateSystemPrompt])
 
   const runForProvider = useCallback(
-    async (k: AiProviderKey, text: string, src: string, tgt: string, domain: string) => {
+    async (k: AiProviderKey, text: string, src: string, tgt: string) => {
       if (!text.trim()) return
       setResults((prev) => ({ ...prev, [k]: { loading: true, result: '', error: '' } }))
       try {
@@ -3784,11 +3903,11 @@ export function AITranslatePanel(): ReactElement {
         // 术语套用：开关开启时，匹配原文术语并追加到 user prompt
         const termHint = applyTermsInTranslate ? buildTermHint(trimmedText, terms) : ''
         const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
-          { role: 'system', content: buildSystemPrompt(src, tgt, domain) },
+          { role: 'system', content: buildSystemPrompt(src, tgt) },
           { role: 'user', content: trimmedText + termHint },
         ]
-        const result = await callAiChat(k, providers[k], messages)
-        setResults((prev) => ({ ...prev, [k]: { loading: false, result, error: '' } }))
+        const { content, usage } = await callAiChat(k, providers[k], messages)
+        setResults((prev) => ({ ...prev, [k]: { loading: false, result: content, error: '', usage } }))
       } catch (e: any) {
         setResults((prev) => ({ ...prev, [k]: { loading: false, result: '', error: e?.message || String(e) } }))
       }
@@ -3797,8 +3916,8 @@ export function AITranslatePanel(): ReactElement {
   )
 
   const runAll = useCallback(
-    (text: string, src: string, tgt: string, domain: string) => {
-      activeProviders.forEach((k) => runForProvider(k, text, src, tgt, domain))
+    (text: string, src: string, tgt: string) => {
+      activeProviders.forEach((k) => runForProvider(k, text, src, tgt))
     },
     [activeProviders, runForProvider],
   )
@@ -3813,14 +3932,13 @@ export function AITranslatePanel(): ReactElement {
     if (activeProviders.length === 0) return
     const src = translateSrc
     const tgt = translateTgt
-    const domain = translateDomain
-    runAll(text, src, tgt, domain)
+    runAll(text, src, tgt)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [translateTimestamp])
 
   const applyAndRun = () => {
     // 写入 store 会触发 timestamp 变化，也会同步其他实例
-    setTranslate({ text: inputText, src: inputSrc, tgt: inputTgt, domain: inputDomain })
+    setTranslate({ text: inputText, src: inputSrc, tgt: inputTgt })
   }
 
   const onCopy = async (text: string) => {
@@ -3871,30 +3989,23 @@ export function AITranslatePanel(): ReactElement {
             {/* 输入区（默认折叠） */}
             {showInputs && (
               <Stack direction="column" spacing={0.5} sx={{ mb: 1 }}>
-                <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap' }}>
-                  <TextField
-                    size="small"
+                <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
+                  <LangAutocomplete
                     label="源语言"
                     value={inputSrc}
-                    onChange={(e) => setInputSrc(e.target.value)}
-                    sx={{ flex: '1 1 120px', minWidth: 120 }}
+                    onChange={setInputSrc}
                     placeholder={projectLang?.src ?? 'auto / en / zh-CN'}
                   />
-                  <TextField
-                    size="small"
+                  <Tooltip title="交换源/目标语言">
+                    <IconButton size="small" onClick={swapLangs} sx={{ p: 0.5 }}>
+                      <SwapHorizIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                  <LangAutocomplete
                     label="目标语言"
                     value={inputTgt}
-                    onChange={(e) => setInputTgt(e.target.value)}
-                    sx={{ flex: '1 1 120px', minWidth: 120 }}
+                    onChange={setInputTgt}
                     placeholder={projectLang?.tgt ?? 'zh-CN / en'}
-                  />
-                  <TextField
-                    size="small"
-                    label="领域/风格（可选）"
-                    value={inputDomain}
-                    onChange={(e) => setInputDomain(e.target.value)}
-                    sx={{ flex: '2 1 180px', minWidth: 180 }}
-                    placeholder="如：IT 科技、法律合同、医学论文、正式书面语"
                   />
                 </Stack>
                 <TextField
@@ -3909,10 +4020,28 @@ export function AITranslatePanel(): ReactElement {
                   placeholder="在原文中点击「AI解释」按钮（不选中文本）会把整段原文送到此处并自动翻译。"
                 />
                 <Box>
-                  <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', mb: 0.25 }}>
-                    <Typography variant="caption" color="text.secondary">
-                      系统 Prompt（可编辑，自动保存）
-                    </Typography>
+                  <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', mb: 0.25, flexWrap: 'wrap', gap: 0.5 }}>
+                    <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
+                      <Typography variant="caption" color="text.secondary" sx={{ mr: 0.5 }}>
+                        系统 Prompt（可编辑，自动保存）
+                      </Typography>
+                      {TRANSLATE_PRESETS.map((p) => (
+                        <Chip
+                          key={p.key}
+                          label={p.label}
+                          size="small"
+                          onClick={() => setTranslateSystemPrompt(p.prompt)}
+                          sx={{
+                            height: 20,
+                            fontSize: '0.7rem',
+                            cursor: 'pointer',
+                            bgcolor: translateSystemPrompt === p.prompt ? 'primary.main' : 'action.hover',
+                            color: translateSystemPrompt === p.prompt ? 'primary.contrastText' : 'text.secondary',
+                            '&:hover': { bgcolor: translateSystemPrompt === p.prompt ? 'primary.dark' : 'action.selected' },
+                          }}
+                        />
+                      ))}
+                    </Stack>
                     <Tooltip title="重置为默认 Prompt">
                       <IconButton
                         size="small"
@@ -3969,7 +4098,6 @@ export function AITranslatePanel(): ReactElement {
                   const useText = inputText.trim() || translateText
                   const useSrc = inputSrc || translateSrc
                   const useTgt = inputTgt || translateTgt
-                  const useDomain = inputDomain || translateDomain
                   return (
                     <Grid
                       key={k}
@@ -4000,6 +4128,11 @@ export function AITranslatePanel(): ReactElement {
                             <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 500 }}>
                               {meta.label}
                             </Typography>
+                            {a?.usage && (
+                              <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 10 }}>
+                                ↑{a.usage.prompt_tokens} ↓{a.usage.completion_tokens} 共{a.usage.total_tokens}
+                              </Typography>
+                            )}
                           </Stack>
                           <Stack direction="row" spacing={0.25}>
                             <Tooltip title="复制译文">
@@ -4025,7 +4158,7 @@ export function AITranslatePanel(): ReactElement {
                             </Tooltip>
                             <Button
                               size="small"
-                              onClick={() => runForProvider(k, useText, useSrc, useTgt, useDomain)}
+                              onClick={() => runForProvider(k, useText, useSrc, useTgt)}
                               disabled={!useText.trim() || a?.loading}
                               sx={{ minWidth: 'auto', fontSize: '0.75rem', p: '2px 6px' }}
                             >

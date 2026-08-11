@@ -5,7 +5,7 @@ import {
   Box, Typography, IconButton, Tooltip, Stack,
   TextField, Checkbox, FormControlLabel, ToggleButton, ToggleButtonGroup, InputAdornment,
   CircularProgress, Dialog, DialogTitle, DialogContent, DialogActions, Button,
-  Popover,
+  Popover, Badge, Chip,
 } from '@mui/material'
 import { useProjectStore, useUIStore, useEditorContextStore, useTermStore, useLayoutStore, useDictionaryStore, useMachineTranslationStore, useAiQAStore, useLinkageFragmentSearchStore, dispatchSegmentActivated, dispatchSourceSelected, callAiChat } from '@app/store'
 import type { Term, AiProviderKey, AiProviderCfg } from '@app/store'
@@ -15,7 +15,7 @@ import { EditableDiv } from './EditableDiv'
 import { showTabInDock } from '@/app/layout/DockLayout'
 import { doInsertViaExecCommand } from '@/shared/utils/insertText'
 import { buildTermHint } from '@/shared/utils/termMatch'
-import { needsTranslation } from '@/shared/utils/segmentFilter'
+import { needsTranslation, htmlToPlainText } from '@/shared/utils/segmentFilter'
 import { searchMemory } from '@/services/tm/engine'
 import type { TMEntry, LanguageCode } from '@/types'
 // Icons
@@ -51,6 +51,14 @@ import DoneAllIcon from '@mui/icons-material/DoneAll'
 import MergeTypeIcon from '@mui/icons-material/MergeType'
 import CallSplitIcon from '@mui/icons-material/CallSplit'
 import CheckIcon from '@mui/icons-material/Check'
+import FilterListIcon from '@mui/icons-material/FilterList'
+import LooksOneIcon from '@mui/icons-material/LooksOne'
+import LooksTwoIcon from '@mui/icons-material/LooksTwo'
+import Looks3Icon from '@mui/icons-material/Looks3'
+import UnfoldLessIcon from '@mui/icons-material/UnfoldLess'
+import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore'
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined'
+import DeleteSweepIcon from '@mui/icons-material/DeleteSweep'
 
 // —— 常量 ——
 
@@ -109,6 +117,69 @@ function getSelectionInfo(el: HTMLElement): { text: string; start: number; end: 
   return { text: selectedText, start, end: start + selectedText.length }
 }
 
+/**
+ * 有层级标注时：基于 DOM Range + 容器 data-start/data-end 属性，
+ * 将当前选区内偏移解析为"完整纯文本坐标系"（即与 marks 的 start/end 同坐标系）。
+ * 解决隐藏间隙被 SVG 占位替换后，普通 textContent 偏移量失真的问题。
+ */
+function getSelectionWithMarks(el: HTMLElement): { text: string; start: number; end: number } | null {
+  const sel = window.getSelection()
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null
+  const range = sel.getRangeAt(0)
+  if (!el.contains(range.commonAncestorContainer)) return null
+  const selectedText = sel.toString()
+  if (!selectedText) return null
+
+  /** 计算一个端点（range start 或 end）在完整纯文本坐标系中的偏移 */
+  function resolvePoint(node: Node, offsetInNode: number): number {
+    // 找到带 data-start/data-end 的最近父容器 span（含 span/Box-component span）
+    let container: Node | null = node
+    while (container && container !== el) {
+      if (container.nodeType === Node.ELEMENT_NODE) {
+        const elm = container as HTMLElement
+        const ds = elm.getAttribute('data-start')
+        const de = elm.getAttribute('data-end')
+        if (ds != null && de != null) {
+          const cStart = parseInt(ds, 10)
+          const cEnd = parseInt(de, 10)
+          // 在该容器内：node 是元素 → offset 是 childIndex（此时是 0 或 children.length，直接返回 cStart/cEnd）
+          // node 是文本节点 → offset 是字符偏移，加到 cStart 上
+          if (node.nodeType === Node.TEXT_NODE) {
+            // 先算该文本节点在容器 textContent 中的累积起始偏移
+            let cumOffset = 0
+            // 遍历容器内所有文本子节点，找到 node 所在位置
+            const walker = document.createTreeWalker(elm, NodeFilter.SHOW_TEXT)
+            let n: Node | null = walker.nextNode()
+            while (n) {
+              if (n === node) {
+                const maxInContainer = cEnd - cStart
+                return Math.min(cEnd, cStart + cumOffset + Math.min(offsetInNode, maxInContainer - cumOffset))
+              }
+              cumOffset += (n.textContent || '').length
+              n = walker.nextNode()
+            }
+            // 未找到文本（理论不发生）：兜底返回 cStart
+            return cStart
+          } else {
+            // 子节点索引型偏移：offset=0 → cStart, offset > 0 → cEnd
+            return offsetInNode === 0 ? cStart : cEnd
+          }
+        }
+      }
+      container = container.parentNode
+    }
+    // 没找到标注容器，退化：用 getSelectionInfo 的老逻辑（整段 offset）
+    const preRange = document.createRange()
+    preRange.selectNodeContents(el)
+    preRange.setEnd(node, offsetInNode)
+    return preRange.toString().length
+  }
+
+  const start = resolvePoint(range.startContainer, range.startOffset)
+  const end = resolvePoint(range.endContainer, range.endOffset)
+  return { text: selectedText, start, end }
+}
+
 /** 获取光标在元素文本中的偏移量 */
 function getCursorOffset(el: HTMLElement): number | null {
   const sel = window.getSelection()
@@ -137,7 +208,7 @@ function useSelectionTracking(segId: ID) {
       setSourceSelection({ text: info.text, segmentId: segId, start: info.start, end: info.end })
       // 翻译联动：选中原文时，发送选中文本+整段原文上下文给当前 active 的功能卡片
       const seg = useProjectStore.getState().segments.find((s) => s.id === segId)
-      dispatchSourceSelected(info.text, segId, seg?.source ?? '')
+      dispatchSourceSelected(info.text, segId, htmlToPlainText(seg?.source ?? ''))
     } else {
       setSourceSelection(null)
     }
@@ -344,6 +415,142 @@ function SourceTextWithTerms({
   )
 }
 
+// —— 聚焦编辑台：原文层级标注（临时分析辅助，不持久化） ——
+
+type SourceMark = { id: string; start: number; end: number; level: 1 | 2 | 3 }
+
+const MARK_LEVEL_STYLE: Record<1 | 2 | 3, { bgcolor: string; label: string }> = {
+  1: { bgcolor: '#f44336', label: '一级' },  // 红
+  2: { bgcolor: '#1976d2', label: '二级' },  // 蓝
+  3: { bgcolor: '#4caf50', label: '三级' },  // 绿
+}
+
+/** 计算间隙 ID：左标注 → 右标注（首尾用 ⇱/⇲ 标记） */
+function gapIdBetween(leftId: string | null, rightId: string | null): string {
+  return `${leftId ?? '⇱'}→${rightId ?? '⇲'}`
+}
+
+/**
+ * 计算标注场景下的"可见文本"：标注片段始终保留，间隙文本根据 hiddenGaps 跳过。
+ * 用于有标注时 AI 翻译/解释的原文提取（隐藏的文本不送入 AI）。
+ */
+function computeVisibleText(text: string, marks: SourceMark[], hiddenGaps: Set<string>): string {
+  if (marks.length === 0) return text
+  const sorted = [...marks].sort((a, b) => a.start - b.start)
+  const parts: string[] = []
+  let cursor = 0
+  for (let i = 0; i < sorted.length; i++) {
+    const m = sorted[i]
+    const prevId = i > 0 ? sorted[i - 1].id : null
+    const gapId = gapIdBetween(prevId, m.id)
+    if (m.start > cursor && !hiddenGaps.has(gapId)) {
+      parts.push(text.slice(cursor, m.start))
+    }
+    parts.push(text.slice(m.start, m.end))
+    cursor = m.end
+  }
+  const lastPrevId = sorted[sorted.length - 1].id
+  const lastGapId = gapIdBetween(lastPrevId, null)
+  if (cursor < text.length && !hiddenGaps.has(lastGapId)) {
+    parts.push(text.slice(cursor))
+  }
+  return parts.join('')
+}
+
+/**
+ * 渲染带层级标注的原文：标注片段以红/蓝/绿底白字显示，非标注间隙可被隐藏。
+ * - 点击标注：首次选中（黄色外框），再次点击 toggle 其左右间隙的显隐
+ * - 点击隐藏间隙的占位图标：恢复显示
+ */
+function SourceTextWithMarks({
+  text,
+  marks,
+  hiddenGaps,
+  selectedMarkId,
+  onMarkClick,
+  onGapClick,
+}: {
+  text: string
+  marks: SourceMark[]
+  hiddenGaps: Set<string>
+  selectedMarkId: string | null
+  onMarkClick: (markId: string) => void
+  onGapClick: (gapId: string) => void
+}) {
+  const sorted = [...marks].sort((a, b) => a.start - b.start)
+  const chunks: { type: 'gap' | 'mark'; text: string; gapId?: string; mark?: SourceMark; start: number; end: number }[] = []
+  let cursor = 0
+  for (let i = 0; i < sorted.length; i++) {
+    const m = sorted[i]
+    const prevId = i > 0 ? sorted[i - 1].id : null
+    const gapId = gapIdBetween(prevId, m.id)
+    if (m.start > cursor) {
+      chunks.push({ type: 'gap', text: text.slice(cursor, m.start), gapId, start: cursor, end: m.start })
+    }
+    chunks.push({ type: 'mark', text: text.slice(m.start, m.end), mark: m, start: m.start, end: m.end })
+    cursor = m.end
+  }
+  const lastPrevId = sorted.length > 0 ? sorted[sorted.length - 1].id : null
+  if (cursor < text.length) {
+    chunks.push({ type: 'gap', text: text.slice(cursor), gapId: gapIdBetween(lastPrevId, null), start: cursor, end: text.length })
+  }
+
+  return (
+    <>
+      {chunks.map((chunk, i) => {
+        if (chunk.type === 'mark' && chunk.mark) {
+          const m = chunk.mark
+          const isSelected = m.id === selectedMarkId
+          const style = MARK_LEVEL_STYLE[m.level]
+          return (
+            <Box
+              key={m.id}
+              component="span"
+              data-start={chunk.start}
+              data-end={chunk.end}
+              onClick={(e) => { e.stopPropagation(); onMarkClick(m.id) }}
+              sx={{
+                bgcolor: style.bgcolor,
+                color: 'common.white',
+                px: 0.4,
+                borderRadius: 0.5,
+                cursor: 'pointer',
+                boxShadow: isSelected ? '0 0 0 2px #ffeb3b' : 'none',
+              }}
+            >
+              {chunk.text}
+            </Box>
+          )
+        }
+        // 间隙
+        const isHidden = chunk.gapId != null && hiddenGaps.has(chunk.gapId)
+        if (isHidden) {
+          return (
+            <Tooltip key={`gap-${i}`} title={`隐藏 ${chunk.text.length} 字，点击显示`} enterDelay={300}>
+              <Box
+                component="span"
+                data-start={chunk.start}
+                data-end={chunk.end}
+                onClick={(e) => { e.stopPropagation(); chunk.gapId && onGapClick(chunk.gapId) }}
+                sx={{ display: 'inline-flex', verticalAlign: 'middle', cursor: 'pointer', mx: 0.25, color: 'text.disabled' }}
+              >
+                <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden="true">
+                  <rect x="0" y="2" width="18" height="6" rx="3" fill="currentColor" opacity="0.2" stroke="currentColor" strokeOpacity="0.45" strokeDasharray="2 1.5" />
+                </svg>
+              </Box>
+            </Tooltip>
+          )
+        }
+        return (
+          <span key={`gap-${i}`} data-start={chunk.start} data-end={chunk.end}>
+            {chunk.text}
+          </span>
+        )
+      })}
+    </>
+  )
+}
+
 // —— 行内按钮条 ——
 
 function InlineSourceButtons({ onAction }: {
@@ -497,8 +704,8 @@ function useSegmentActions(): { runAction: (seg: Segment, action: string) => voi
       case 'dictionary': {
         const editorState = useEditorContextStore.getState()
         const sourceSel = editorState.sourceSelection
-        // 查询词优先取原文选中文本；无选中时回退到整段原文
-        const word = sourceSel?.text.trim() || seg.source.trim()
+        // 查询词优先取原文选中文本；无选中时回退到整段原文（纯文本，去除富文本标签）
+        const word = sourceSel?.text.trim() || htmlToPlainText(seg.source).trim()
         if (!word) {
           useUIStore.getState().notify('warning', '请先在原文中选中要查询的词')
           return
@@ -515,8 +722,8 @@ function useSegmentActions(): { runAction: (seg: Segment, action: string) => voi
       case 'machineTranslate': {
         const editorState = useEditorContextStore.getState()
         const sourceSel = editorState.sourceSelection
-        // 待翻译文本优先取原文选中文本；无选中时使用整段原文
-        const text = sourceSel?.text.trim() || seg.source.trim()
+        // 待翻译文本优先取原文选中文本；无选中时使用整段原文（纯文本，去除富文本标签）
+        const text = sourceSel?.text.trim() || htmlToPlainText(seg.source).trim()
         if (!text) {
           useUIStore.getState().notify('warning', '当前段原文为空，无可翻译内容')
           return
@@ -544,11 +751,11 @@ function useSegmentActions(): { runAction: (seg: Segment, action: string) => voi
             useUIStore.getState().notify('warning', '请先在「视图」选项中勾选「AI问答」')
             return
           }
-          useAiQAStore.getState().setQuery(selectionText, seg.source)
+          useAiQAStore.getState().setQuery(selectionText, htmlToPlainText(seg.source))
           showTabInDock('aiqa')
         } else {
           // 无选中文本 → AI 翻译整段原文（返回 AI翻译 tab）
-          const srcWhole = seg.source.trim()
+          const srcWhole = htmlToPlainText(seg.source).trim()
           if (!srcWhole) {
             useUIStore.getState().notify('warning', '当前段原文为空')
             return
@@ -606,7 +813,7 @@ function useSegmentActions(): { runAction: (seg: Segment, action: string) => voi
         if (state.activeSegmentId !== seg.id) {
           state.selectSegment(seg.id!)
           // 触发 linkage，确保预览面板滚动
-          dispatchSegmentActivated(seg.id!, seg.source ?? '')
+          dispatchSegmentActivated(seg.id!, htmlToPlainText(seg.source ?? ''))
         }
         showTabInDock('preview')
         break
@@ -663,10 +870,12 @@ interface EditorSearchBarProps {
   selectFile: (fileId: ID | null) => Promise<void>
   updateSegment: (id: ID, patch: Partial<Segment>) => Promise<void>
   onClose: () => void
+  /** 状态筛选（空 Set = 不过滤）；搜索替换仅作用于允许的状态段 */
+  statusFilter: Set<SegmentStatus>
 }
 
 function EditorSearchBar(props: EditorSearchBarProps) {
-  const { segments, activeFileId, currentProjectId, selectSegment, selectFile, updateSegment, onClose } = props
+  const { segments, activeFileId, currentProjectId, selectSegment, selectFile, updateSegment, onClose, statusFilter } = props
   const [keyword, setKeyword] = useState('')
   // 高级模式：三个字段独立关键词，AND 关系
   const [advanced, setAdvanced] = useState(false)
@@ -751,23 +960,25 @@ function EditorSearchBar(props: EditorSearchBarProps) {
   // 当前文件匹配（同步）
   const fileMatches = useMemo<SearchMatch[]>(() => {
     if (scope !== 'file') return []
+    // 状态筛选：空 Set 不过滤，否则仅匹配允许的状态
+    const visibleSegs = statusFilter.size === 0 ? segments : segments.filter((s) => statusFilter.has(s.status))
     if (advanced) {
       if (!hasAdvancedInput) return []
       const result: SearchMatch[] = []
-      for (const seg of segments) {
+      for (const seg of visibleSegs) {
         if (matchAdvanced(seg)) result.push({ segment: seg, field: 'target' })
       }
       return result
     }
     if (!regex) return []
     const result: SearchMatch[] = []
-    for (const seg of segments) {
+    for (const seg of visibleSegs) {
       if (fields.source) { regex.lastIndex = 0; if (regex.test(seg.source ?? '')) result.push({ segment: seg, field: 'source' }) }
       if (fields.target) { regex.lastIndex = 0; if (regex.test(seg.target ?? '')) result.push({ segment: seg, field: 'target' }) }
       if (fields.notes) { regex.lastIndex = 0; if (regex.test(seg.notes ?? '')) result.push({ segment: seg, field: 'notes' }) }
     }
     return result
-  }, [scope, advanced, hasAdvancedInput, matchAdvanced, regex, segments, fields])
+  }, [scope, advanced, hasAdvancedInput, matchAdvanced, regex, segments, fields, statusFilter])
 
   // 整个项目匹配（异步）
   useEffect(() => {
@@ -790,8 +1001,10 @@ function EditorSearchBar(props: EditorSearchBarProps) {
         const fileIdToName = new Map(projectFiles.map((f) => [f.id as number, f.name]))
         const fileIds = projectFiles.map((f) => f.id as number)
         const rows = await db.segments.where('fileId').anyOf(fileIds).sortBy('index')
+        // 状态筛选：空 Set 不过滤，否则仅保留允许的状态
+        const visibleRows = statusFilter.size === 0 ? rows : rows.filter((s) => statusFilter.has(s.status))
         const hits: SearchMatch[] = []
-        for (const seg of rows) {
+        for (const seg of visibleRows) {
           const fileName = fileIdToName.get(seg.fileId as number) ?? '（未知文件）'
           if (advanced) {
             if (matchAdvanced(seg)) hits.push({ segment: seg, field: 'target', fileName })
@@ -808,7 +1021,7 @@ function EditorSearchBar(props: EditorSearchBarProps) {
       }
     })()
     return () => { cancelled = true }
-  }, [scope, advanced, hasAdvancedInput, regex, currentProjectId, fields, matchAdvanced])
+  }, [scope, advanced, hasAdvancedInput, regex, currentProjectId, fields, matchAdvanced, statusFilter])
 
   const allMatches = scope === 'file' ? fileMatches : projectMatches
 
@@ -1135,6 +1348,9 @@ export function DivBilingualEditor(): ReactElement {
   const [focusEditing, setFocusEditing] = useState(false)
   const [sourceEditingId, setSourceEditingId] = useState<ID | null>(null)
   const [showSearchBar, setShowSearchBar] = useState(false)
+  // 状态筛选器（空 Set = 不过滤，显示所有）
+  const [statusFilter, setStatusFilter] = useState<Set<SegmentStatus>>(new Set())
+  const [showStatusFilter, setShowStatusFilter] = useState<HTMLButtonElement | null>(null)
   // 自动翻译状态
   const [autoTranslating, setAutoTranslating] = useState(false)
   const [autoProgress, setAutoProgress] = useState({ done: 0, total: 0 })
@@ -1151,6 +1367,12 @@ export function DivBilingualEditor(): ReactElement {
   const { widths, startResize } = useColumnResize()
   const targetCursor = useEditorContextStore((s) => s.targetCursor)
   const targetSelection = useEditorContextStore((s) => s.targetSelection)
+
+  // 状态筛选：空 Set 表示不过滤，显示所有段
+  const filteredSegments = useMemo(() => {
+    if (statusFilter.size === 0) return segments
+    return segments.filter((s) => statusFilter.has(s.status))
+  }, [segments, statusFilter])
 
   // —— 术语译文粘贴到译文编辑器（模拟 Ctrl+V：选区优先替换，否则光标插入） ——
   // 始终编辑态：contenteditable 始终挂载，直接插入；仅在段未渲染（离屏）等异常情况兜底提示
@@ -1172,6 +1394,10 @@ export function DivBilingualEditor(): ReactElement {
   activeSegmentIdRef.current = activeSegmentId
   const focusEditingRef = useRef(focusEditing)
   focusEditingRef.current = focusEditing
+  /** 是否在段切换后自动将光标聚焦到译文编辑区（键盘触发 true，鼠标触发 false） */
+  const autoFocusTargetRef = useRef(false)
+  /** 缓存上一次的激活段 ID，用于退出时检测空草稿回退 */
+  const prevActiveIdRef = useRef<ID | null>(null)
 
   // —— 包装 runAction：拦截 editSource，进入原文编辑态 ——
   const { runAction: baseRunAction } = useSegmentActions()
@@ -1189,33 +1415,73 @@ export function DivBilingualEditor(): ReactElement {
   // Virtual scrolling — estimateSize 考虑到按钮条展开后行高更大（只 active 那一行会变高）
   // 实际高度由 measureElement 通过 ResizeObserver 测量，这里只是默认估计
   const virtualizer = useVirtualizer({
-    count: segments.length,
+    count: filteredSegments.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => (layout === 'stack' ? 90 : 60),
     overscan: 5,
-    getItemKey: (index) => segments[index]?.id ?? index,
+    getItemKey: (index) => filteredSegments[index]?.id ?? index,
   })
 
   // 活动段变化时滚动到该段
   useEffect(() => {
-    if (activeSegmentId == null || segments.length === 0) return
-    const idx = segments.findIndex((s) => s.id === activeSegmentId)
+    if (activeSegmentId == null || filteredSegments.length === 0) return
+    const idx = filteredSegments.findIndex((s) => s.id === activeSegmentId)
     if (idx >= 0) {
       virtualizer.scrollToIndex(idx, { align: 'center', behavior: 'smooth' })
     }
   }, [activeSegmentId, segments, virtualizer])
 
+  // 聚焦指定段的译文 contenteditable 编辑区，并将光标置于文本末尾
+  // 考虑虚拟滚动可能尚未挂载 DOM，采用重试机制（最多 6 次 × 50ms = 300ms）
+  const focusTargetEditable = useCallback((segId: ID, attempt = 0) => {
+    if (segId == null) return
+    const el = document.querySelector<HTMLElement>(
+      `[data-seg-id="${String(segId)}"][contenteditable="true"]`,
+    )
+    if (el) {
+      el.focus()
+      // 光标移动到文本末尾
+      try {
+        const range = document.createRange()
+        range.selectNodeContents(el)
+        range.collapse(false)
+        const sel = window.getSelection()
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+      } catch { /* 富文本节点结构异常时忽略，只聚焦即可 */ }
+    } else if (attempt < 6) {
+      setTimeout(() => focusTargetEditable(segId, attempt + 1), 50)
+    }
+  }, [])
+
   // 同步激活段到编辑器上下文 store（供其他功能块订阅）
   // 仅在 activeSegmentId 变化时触发，不依赖 segments（避免标注状态等字段变化时重复触发联动）
   useEffect(() => {
+    // 退出激活段时：如果旧段为草稿且译文为空，自动回退为未译
+    if (prevActiveIdRef.current != null && prevActiveIdRef.current !== activeSegmentId) {
+      const prevSeg = useProjectStore.getState().segments.find((s) => s.id === prevActiveIdRef.current)
+      if (prevSeg && prevSeg.status === 'draft' && !(prevSeg.target ?? '').trim()) {
+        useProjectStore.getState().updateSegment(prevSeg.id!, { status: 'untranslated' })
+      }
+    }
+    prevActiveIdRef.current = activeSegmentId
+
     setEditorActiveSegment(activeSegmentId ?? null)
     clearEditorSelection()
     // 翻译联动：激活段变化时，发送原文给当前 active 的功能卡片（防抖 400ms）
     if (activeSegmentId != null) {
       const seg = useProjectStore.getState().segments.find((s) => s.id === activeSegmentId)
       if (seg) {
-        dispatchSegmentActivated(activeSegmentId, seg.source ?? '')
+        dispatchSegmentActivated(activeSegmentId, htmlToPlainText(seg.source ?? ''))
       }
+      // 键盘/按钮驱动的段切换 → 自动聚焦译文编辑区
+      if (autoFocusTargetRef.current) {
+        autoFocusTargetRef.current = false
+        // 等 scrollToIndex 和虚拟滚动渲染完毕再聚焦
+        setTimeout(() => focusTargetEditable(activeSegmentId!), 60)
+      }
+    } else {
+      autoFocusTargetRef.current = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSegmentId])
@@ -1240,30 +1506,35 @@ export function DivBilingualEditor(): ReactElement {
 
   // —— 顶部快捷导航：下一段 / 下一个未译段 ——
   const goNextSegment = useCallback(() => {
-    const state = useProjectStore.getState()
-    const seg = state.activeSegmentId != null ? state.segments.find((s) => s.id === state.activeSegmentId) : null
-    const idx = seg ? state.segments.findIndex((s) => s.id === seg.id) : -1
-    const nextIdx = segments.length > 0 ? (idx < 0 ? 0 : Math.min(idx + 1, segments.length - 1)) : -1
-    if (nextIdx >= 0) selectSegment(segments[nextIdx].id!)
-  }, [segments, selectSegment])
+    if (filteredSegments.length === 0) return
+    const seg = activeSegmentId != null ? filteredSegments.find((s) => s.id === activeSegmentId) : null
+    const idx = seg ? filteredSegments.findIndex((s) => s.id === seg.id) : -1
+    const nextIdx = idx < 0 ? 0 : Math.min(idx + 1, filteredSegments.length - 1)
+    autoFocusTargetRef.current = true
+    selectSegment(filteredSegments[nextIdx].id!)
+  }, [filteredSegments, activeSegmentId, selectSegment])
 
   const goNextUntranslated = useCallback(() => {
-    const state = useProjectStore.getState()
-    const seg = state.activeSegmentId != null ? state.segments.find((s) => s.id === state.activeSegmentId) : null
-    const fromIdx = seg ? state.segments.findIndex((s) => s.id === seg.id) : -1
+    if (filteredSegments.length === 0) {
+      useUIStore.getState().notify('info', '没有需要翻译的段落')
+      return
+    }
+    const seg = activeSegmentId != null ? filteredSegments.find((s) => s.id === activeSegmentId) : null
+    const fromIdx = seg ? filteredSegments.findIndex((s) => s.id === seg.id) : -1
     const searchOrder = [
-      ...state.segments.slice(fromIdx + 1),
-      ...state.segments.slice(0, Math.max(0, fromIdx + 1)),
+      ...filteredSegments.slice(fromIdx + 1),
+      ...filteredSegments.slice(0, Math.max(0, fromIdx + 1)),
     ]
     const found = searchOrder.find((s) => needsTranslation(s))
     if (found) {
+      autoFocusTargetRef.current = true
       selectSegment(found.id!)
     } else {
       useUIStore.getState().notify('info', '没有需要翻译的段落')
     }
-  }, [selectSegment])
+  }, [filteredSegments, activeSegmentId, selectSegment])
 
-  // 全局快捷键：Ctrl+F 搜索；Ctrl+Shift+M/S 合并/拆分；Ctrl+↓ 下个未译段
+  // 全局快捷键：Ctrl+F 搜索；Ctrl+Shift+M/S 合并/拆分；Ctrl+Shift+Enter 下个未译段
   // 注：useEffect 必须放在 goNextUntranslated 之后，避免"使用前未声明"
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -1272,7 +1543,7 @@ export function DivBilingualEditor(): ReactElement {
         setShowSearchBar((v) => !v)
         return
       }
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'ArrowDown' || e.key === 'Down')) {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Enter') {
         const active = document.activeElement as HTMLElement | null
         if (!active || !active.closest('[contenteditable="true"], input, textarea')) {
           e.preventDefault()
@@ -1335,25 +1606,44 @@ export function DivBilingualEditor(): ReactElement {
   }, [updateSegment])
 
   // 始终编辑态：commit 仅负责把 ref 里的草稿写入 store，不再切换编辑态
-  const handleCommit = useCallback((seg: Segment, value: string) => {
-    if (seg.id != null && value !== seg.target) {
-      updateSegment(seg.id, { target: value, status: 'draft' })
-    }
+  // status 可自定义（如 Ctrl+Enter 传 'translated'），默认 'draft'
+  const handleCommit = useCallback((seg: Segment, value: string, status: SegmentStatus = 'draft') => {
+    if (seg.id == null) return
+    const patch: Partial<Segment> = {}
+    if (value !== seg.target) patch.target = value
+    if (status !== seg.status) patch.status = status
+    if (Object.keys(patch).length > 0) updateSegment(seg.id, patch)
   }, [updateSegment])
 
   const handleKeyDown = useCallback(
     (e: ReactKeyboardEvent, seg: Segment) => {
       if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        // Enter：保存草稿 + 下一段
         e.preventDefault()
         handleCommit(seg, editingValueRef.current)
-        const idx = segments.findIndex((s) => s.id === seg.id)
-        if (idx >= 0 && idx < segments.length - 1) {
-          const nextSeg = segments[idx + 1]
+        const idx = filteredSegments.findIndex((s) => s.id === seg.id)
+        if (idx >= 0 && idx < filteredSegments.length - 1) {
+          autoFocusTargetRef.current = true
+          const nextSeg = filteredSegments[idx + 1]
           selectSegment(nextSeg.id!)
         }
-      } else if ((e.ctrlKey || e.metaKey) && (e.key === 'ArrowDown' || e.key === 'Down')) {
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'Enter') {
+        // Ctrl+Enter：标记已译 + 下一段
         e.preventDefault()
-        handleCommit(seg, editingValueRef.current)
+        const value = editingValueRef.current
+        handleCommit(seg, value, value.trim() ? 'translated' : 'draft')
+        const idx = filteredSegments.findIndex((s) => s.id === seg.id)
+        if (idx >= 0 && idx < filteredSegments.length - 1) {
+          autoFocusTargetRef.current = true
+          const nextSeg = filteredSegments[idx + 1]
+          selectSegment(nextSeg.id!)
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Enter') {
+        // Ctrl+Shift+Enter：标记已译 + 下一个未译段
+        e.preventDefault()
+        const value = editingValueRef.current
+        handleCommit(seg, value, value.trim() ? 'translated' : 'draft')
+        autoFocusTargetRef.current = true
         goNextUntranslated()
       } else if (e.key === 'Escape') {
         e.preventDefault()
@@ -1361,17 +1651,18 @@ export function DivBilingualEditor(): ReactElement {
       } else if (e.key === 'Tab') {
         e.preventDefault()
         e.stopPropagation()
-        const idx = segments.findIndex((s) => s.id === seg.id)
+        const idx = filteredSegments.findIndex((s) => s.id === seg.id)
         const direction = e.shiftKey ? -1 : 1
         const nextIdx = idx + direction
-        if (nextIdx >= 0 && nextIdx < segments.length) {
+        if (nextIdx >= 0 && nextIdx < filteredSegments.length) {
           handleCommit(seg, editingValueRef.current)
-          const nextSeg = segments[nextIdx]
+          autoFocusTargetRef.current = true
+          const nextSeg = filteredSegments[nextIdx]
           selectSegment(nextSeg.id!)
         }
       }
     },
-    [segments, selectSegment, handleCommit, goNextUntranslated],
+    [filteredSegments, selectSegment, handleCommit, goNextUntranslated],
   )
 
   // —— 原文编辑：确认/取消 ——
@@ -1396,12 +1687,13 @@ export function DivBilingualEditor(): ReactElement {
 
   const handleFocusNavigate = useCallback((direction: 1 | -1) => {
     if (activeSegmentIdRef.current == null) return
-    const idx = segments.findIndex((s) => s.id === activeSegmentIdRef.current)
+    const idx = filteredSegments.findIndex((s) => s.id === activeSegmentIdRef.current)
     const nextIdx = idx + direction
-    if (nextIdx >= 0 && nextIdx < segments.length) {
-      selectSegment(segments[nextIdx].id!)
+    if (nextIdx >= 0 && nextIdx < filteredSegments.length) {
+      autoFocusTargetRef.current = true
+      selectSegment(filteredSegments[nextIdx].id!)
     }
-  }, [segments, selectSegment])
+  }, [filteredSegments, selectSegment])
 
   // —— 剪贴板翻译：从剪贴板导入 / 导出到剪贴板 ——
   const doImportClipboardText = useCallback(async (text: string) => {
@@ -1537,14 +1829,14 @@ export function DivBilingualEditor(): ReactElement {
         try {
           // 轮询使用多个 provider（均匀分布负载）
           const [providerKey, providerCfg] = activeProviders[(done) % activeProviders.length]
-          const trimmedSource = seg.source.trim()
+          const trimmedSource = htmlToPlainText(seg.source).trim()
           // 术语套用：开关开启时，匹配原文术语并追加到 user prompt
           const termHint = applyTerms ? buildTermHint(trimmedSource, terms) : ''
           const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: trimmedSource + termHint },
           ]
-          const result = await callAiChat(providerKey, providerCfg, messages)
+          const { content: result } = await callAiChat(providerKey, providerCfg, messages)
           if (result.trim()) {
             await updateSegment(seg.id, { target: result.trim(), status: 'draft' })
             success++
@@ -1620,7 +1912,7 @@ export function DivBilingualEditor(): ReactElement {
     const updateSegment = projState.updateSegment
     for (const seg of untranslated) {
       if (!seg.id || !seg.source?.trim()) { skipped++; continue }
-      const matches = searchMemory(entries, seg.source, {
+      const matches = searchMemory(entries, htmlToPlainText(seg.source), {
         sourceLang: src,
         targetLang: tgt,
         threshold,
@@ -1767,7 +2059,9 @@ export function DivBilingualEditor(): ReactElement {
           </IconButton>
         </Tooltip>
         <Typography variant="caption" sx={{ color: 'text.secondary', ml: 1 }}>
-          共 {segments.length} 段 · 已译 {segments.filter((s) => s.status !== 'untranslated').length} 段
+          {statusFilter.size === 0
+            ? `共 ${segments.length} 段 · 已译 ${segments.filter((s) => s.status !== 'untranslated').length} 段`
+            : `筛选 ${filteredSegments.length}/${segments.length} 段 · 已译 ${filteredSegments.filter((s) => s.status !== 'untranslated').length} 段`}
         </Typography>
         <Box sx={{ flex: 1 }} />
         {autoTranslating && (
@@ -1796,7 +2090,7 @@ export function DivBilingualEditor(): ReactElement {
           </Typography>
         </Tooltip>
         <Typography variant="caption" sx={{ color: 'text.disabled' }}>·</Typography>
-        <Tooltip title="跳至下个未译段（Ctrl/Cmd + ↓）">
+        <Tooltip title="跳至下个未译段（Ctrl/Cmd + Shift + Enter）">
           <Typography
             component="span"
             variant="caption"
@@ -1809,24 +2103,17 @@ export function DivBilingualEditor(): ReactElement {
               '&:hover': { color: 'text.secondary', textDecoration: 'underline' },
             }}
           >
-            Ctrl+↓ 下个未译段
+            Ctrl+Shift+↵ 下个未译段
           </Typography>
         </Tooltip>
-        <Tooltip title={autoTranslating ? '点击取消自动翻译' : '自动翻译未译段落（Shift+点击自定义数量）'}>
-          <IconButton
-            size="small"
-            onClick={(e) => {
-              if (autoTranslating) {
-                handleAutoTranslate(0)
-              } else if (e.shiftKey) {
-                setShowAutoTranslateDialog(true)
-              } else {
-                handleAutoTranslate(50)
-              }
-            }}
-            sx={{ color: autoTranslating ? 'error.main' : 'primary.main' }}
-          >
-            <AutoAwesomeIcon fontSize="small" />
+        <Tooltip title="剪贴板翻译：从剪贴板导入原文（Ctrl+Alt+V）">
+          <IconButton size="small" onClick={handleImportFromClipboard} sx={{ color: 'text.disabled' }}>
+            <ContentPasteIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="导出当前文件已译内容到剪贴板">
+          <IconButton size="small" onClick={handleExportToClipboard} sx={{ color: 'text.disabled' }}>
+            <ContentCopyIcon fontSize="small" />
           </IconButton>
         </Tooltip>
         <Tooltip title={tmAutoFilling ? 'TM 自动填充中…' : 'TM 自动填充未译段（Shift+点击设置阈值）'}>
@@ -1845,22 +2132,97 @@ export function DivBilingualEditor(): ReactElement {
             {tmAutoFilling ? <CircularProgress size={16} /> : <PlaylistAddCheckIcon fontSize="small" />}
           </IconButton>
         </Tooltip>
+        <Tooltip title={autoTranslating ? '点击取消自动翻译' : '自动翻译未译段落（Shift+点击自定义数量）'}>
+          <IconButton
+            size="small"
+            onClick={(e) => {
+              if (autoTranslating) {
+                handleAutoTranslate(0)
+              } else if (e.shiftKey) {
+                setShowAutoTranslateDialog(true)
+              } else {
+                handleAutoTranslate(50)
+              }
+            }}
+            sx={{ color: autoTranslating ? 'error.main' : 'primary.main' }}
+          >
+            <AutoAwesomeIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title={statusFilter.size === 0 ? '状态筛选（当前：全部）' : `状态筛选（${statusFilter.size}项）`}>
+          <IconButton
+            size="small"
+            onClick={(e) => setShowStatusFilter(e.currentTarget)}
+            sx={{ color: statusFilter.size > 0 ? 'primary.main' : 'text.disabled' }}
+          >
+            <Badge badgeContent={statusFilter.size > 0 ? statusFilter.size : undefined} color="primary" sx={{ '& .MuiBadge-badge': { fontSize: 9, height: 14, minWidth: 14 } }}>
+              <FilterListIcon fontSize="small" />
+            </Badge>
+          </IconButton>
+        </Tooltip>
         <Tooltip title="查找/替换 (Ctrl+F)">
           <IconButton size="small" onClick={() => setShowSearchBar((v) => !v)} sx={{ color: showSearchBar ? 'primary.main' : 'text.disabled' }}>
             <SearchIcon fontSize="small" />
           </IconButton>
         </Tooltip>
-        <Tooltip title="剪贴板翻译：从剪贴板导入原文（Ctrl+Alt+V）">
-          <IconButton size="small" onClick={handleImportFromClipboard} sx={{ color: 'text.disabled' }}>
-            <ContentPasteIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="导出当前文件已译内容到剪贴板">
-          <IconButton size="small" onClick={handleExportToClipboard} sx={{ color: 'text.disabled' }}>
-            <ContentCopyIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
       </Box>
+
+      {/* 状态筛选器弹窗：多选段状态，筛选段列表 + 搜索替换范围 */}
+      <Popover
+        open={showStatusFilter != null}
+        anchorEl={showStatusFilter}
+        onClose={() => setShowStatusFilter(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        slotProps={{ paper: { sx: { p: 1.5, maxWidth: 260 } } }}
+      >
+        <Stack direction="row" sx={{ mb: 1, justifyContent: 'space-between', alignItems: 'center' }}>
+          <Typography variant="caption" sx={{ fontWeight: 600 }}>状态筛选</Typography>
+          <Button
+            size="small"
+            color="inherit"
+            disabled={statusFilter.size === 0}
+            onClick={() => setStatusFilter(new Set())}
+            sx={{ minWidth: 'auto', fontSize: 11, textTransform: 'none' }}
+          >
+            清除
+          </Button>
+        </Stack>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+          {STATUS_ORDER.map((st) => {
+            const cfg = STATUS_CONFIG[st]
+            const selected = statusFilter.has(st)
+            const count = segments.filter((s) => s.status === st).length
+            return (
+              <Chip
+                key={st}
+                size="small"
+                label={`${cfg.label} (${count})`}
+                onClick={() => {
+                  setStatusFilter((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(st)) next.delete(st)
+                    else next.add(st)
+                    return next
+                  })
+                }}
+                color={selected ? 'primary' : 'default'}
+                variant={selected ? 'filled' : 'outlined'}
+                sx={{
+                  borderColor: selected ? undefined : cfg.color,
+                  color: selected ? undefined : cfg.color,
+                  fontSize: 11,
+                }}
+              />
+            )
+          })}
+        </Box>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+          {statusFilter.size === 0
+            ? '未筛选：显示所有段，搜索替换作用于全部段'
+            : `已筛选 ${filteredSegments.length}/${segments.length} 段，搜索替换仅作用于所选状态`}
+        </Typography>
+      </Popover>
 
       {/* 自动翻译数量配置对话框（Shift+点击触发） */}
       <Dialog open={showAutoTranslateDialog} onClose={() => setShowAutoTranslateDialog(false)} maxWidth="xs" fullWidth>
@@ -1978,6 +2340,7 @@ export function DivBilingualEditor(): ReactElement {
           selectFile={selectFile}
           updateSegment={updateSegment}
           onClose={() => setShowSearchBar(false)}
+          statusFilter={statusFilter}
         />
       )}
 
@@ -2261,11 +2624,172 @@ function FocusEditPanel(props: FocusEditPanelProps) {
     }, 0)
   }, [onCommit])
 
-  const onSourceAction = useCallback((action: string) => { if (seg) runAction(seg, action) }, [seg, runAction])
   const onTargetAction = useCallback((action: string) => { if (seg) runAction(seg, action) }, [seg, runAction])
 
   // 选中文本/光标位置追踪（seg 为 null 时用 -1 占位，不会产生有意义的数据）
   const { onSourceMouseUp, onTargetMouseUp, onTargetKeyUp } = useSelectionTracking(seg?.id ?? -1)
+
+  // —— 原文层级标注（临时分析辅助，切换段时自动清空） ——
+  const focusSourceBoxRef = useRef<HTMLElement | null>(null)
+  const [marks, setMarks] = useState<SourceMark[]>([])
+  const [hiddenGaps, setHiddenGaps] = useState<Set<string>>(new Set())
+  const [selectedMarkId, setSelectedMarkId] = useState<string | null>(null)
+  const [showClearConfirm, setShowClearConfirm] = useState(false)
+
+  // 切换段时清空所有标注状态
+  useEffect(() => {
+    setMarks([])
+    setHiddenGaps(new Set())
+    setSelectedMarkId(null)
+    setShowClearConfirm(false)
+  }, [seg?.id])
+
+  // 原文纯文本（标注基于纯文本偏移量，与选区追踪一致）
+  const plainSource = useMemo(() => htmlToPlainText(seg?.source ?? ''), [seg?.source])
+  const hasMarks = marks.length > 0
+
+  // 添加标注：基于当前原文选区，创建后清除系统选区（视觉选中≠系统选区）
+  // 已存在 marks 时，从 DOM 解析真实偏移（避免隐藏间隙占位导致的 textContent 偏移失真）
+  const handleAddMark = useCallback((level: 1 | 2 | 3) => {
+    let sel: { text: string; start: number; end: number } | null
+    if (marks.length > 0 && focusSourceBoxRef.current) {
+      // 已有标注 → 用 DOM Range + data-* 属性解析为完整纯文本坐标系偏移
+      sel = getSelectionWithMarks(focusSourceBoxRef.current)
+    } else {
+      // 无标注（首次添加）→ 沿用 store 中的选区追踪结果
+      const s = useEditorContextStore.getState().sourceSelection
+      sel = s ? { text: s.text, start: s.start, end: s.end } : null
+    }
+    if (!sel || !sel.text.trim()) return
+    // 拒绝与已有标注重叠
+    const overlaps = marks.some(m => !(sel!.end <= m.start || sel!.start >= m.end))
+    if (overlaps) return
+    const id = `m-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    setMarks(prev => [...prev, { id, start: sel!.start, end: sel!.end, level }])
+    setSelectedMarkId(id)
+    // 清除浏览器系统选区 + store 中的选区状态，让后续 AI解释 走"无选区→AI翻译"分支
+    window.getSelection()?.removeAllRanges()
+    useEditorContextStore.getState().setSourceSelection(null)
+  }, [marks])
+
+  // 点击标注：首次选中（视觉高亮），再次点击 toggle 其左右间隙
+  // 注意：点击标注只设置视觉选中状态，不影响系统选区（视觉选中≠系统选区）
+  const handleMarkClick = useCallback((markId: string) => {
+    if (selectedMarkId !== markId) {
+      setSelectedMarkId(markId)
+      // 清除系统选区，确保 AI解释 走"无选区→AI翻译"分支
+      window.getSelection()?.removeAllRanges()
+      useEditorContextStore.getState().setSourceSelection(null)
+      return
+    }
+    // 已选中 → toggle 左右间隙
+    const sorted = [...marks].sort((a, b) => a.start - b.start)
+    const idx = sorted.findIndex(m => m.id === markId)
+    if (idx < 0) return
+    const prevId = idx > 0 ? sorted[idx - 1].id : null
+    const nextId = idx < sorted.length - 1 ? sorted[idx + 1].id : null
+    const leftGap = gapIdBetween(prevId, markId)
+    const rightGap = gapIdBetween(markId, nextId)
+    const leftHidden = hiddenGaps.has(leftGap)
+    const rightHidden = hiddenGaps.has(rightGap)
+    setHiddenGaps(prev => {
+      const next = new Set(prev)
+      if (leftHidden && rightHidden) {
+        next.delete(leftGap)
+        next.delete(rightGap)
+      } else {
+        next.add(leftGap)
+        next.add(rightGap)
+      }
+      return next
+    })
+  }, [selectedMarkId, marks, hiddenGaps])
+
+  // 点击隐藏间隙占位 → 恢复显示
+  const handleGapClick = useCallback((gapId: string) => {
+    setHiddenGaps(prev => {
+      const next = new Set(prev)
+      next.delete(gapId)
+      return next
+    })
+  }, [])
+
+  // 折叠/展开全部间隙
+  const allGapsHidden = useMemo(() => {
+    if (marks.length === 0) return false
+    const sorted = [...marks].sort((a, b) => a.start - b.start)
+    const ids: string[] = []
+    for (let i = 0; i <= sorted.length; i++) {
+      const prev = i > 0 ? sorted[i - 1].id : null
+      const next = i < sorted.length ? sorted[i].id : null
+      ids.push(gapIdBetween(prev, next))
+    }
+    return ids.every(id => hiddenGaps.has(id))
+  }, [marks, hiddenGaps])
+
+  const handleCollapseAll = useCallback(() => {
+    if (allGapsHidden) {
+      // 全部已隐藏 → 展开全部
+      setHiddenGaps(new Set())
+    } else {
+      // 隐藏全部间隙
+      const sorted = [...marks].sort((a, b) => a.start - b.start)
+      const ids = new Set<string>()
+      for (let i = 0; i <= sorted.length; i++) {
+        const prev = i > 0 ? sorted[i - 1].id : null
+        const next = i < sorted.length ? sorted[i].id : null
+        ids.add(gapIdBetween(prev, next))
+      }
+      setHiddenGaps(ids)
+    }
+  }, [allGapsHidden, marks])
+
+  // 删除选中标注
+  const handleDeleteSelected = useCallback(() => {
+    if (!selectedMarkId) return
+    setMarks(prev => prev.filter(m => m.id !== selectedMarkId))
+    setSelectedMarkId(null)
+  }, [selectedMarkId])
+
+  // 清空全部标注
+  const handleClearAll = useCallback(() => {
+    setMarks([])
+    setHiddenGaps(new Set())
+    setSelectedMarkId(null)
+    setShowClearConfirm(false)
+  }, [])
+
+  // 原文按钮动作（有标注时拦截 aiExplain：无系统选区则送可见文本到 AI翻译）
+  const onSourceAction = useCallback((action: string) => {
+    if (!seg) return
+    if (action === 'aiExplain' && hasMarks) {
+      const sourceSel = useEditorContextStore.getState().sourceSelection
+      const selectionText = sourceSel?.text.trim()
+      if (selectionText) {
+        // 有真实文本选区 → 走原逻辑（AI问答释义）
+        runAction(seg, action)
+      } else {
+        // 无真实选区 → 送可见文本到 AI翻译
+        const visibleText = computeVisibleText(plainSource, marks, hiddenGaps).trim()
+        if (!visibleText) {
+          useUIStore.getState().notify('warning', '可见文本为空')
+          return
+        }
+        if (!useLayoutStore.getState().isTabVisible('aitranslate')) {
+          useUIStore.getState().notify('warning', '请先在「视图」选项中勾选「AI翻译」')
+          return
+        }
+        const projState = useProjectStore.getState()
+        const cur = projState.projects.find((p) => p.id === projState.currentProjectId)
+        const patch: { text: string; src?: string; tgt?: string } = { text: visibleText }
+        if (cur) { patch.src = cur.sourceLang; patch.tgt = cur.targetLang }
+        useAiQAStore.getState().setTranslate(patch)
+        showTabInDock('aitranslate')
+      }
+    } else {
+      runAction(seg, action)
+    }
+  }, [seg, runAction, hasMarks, plainSource, marks, hiddenGaps])
 
   // 空状态：未选中任何段
   if (!seg) {
@@ -2290,6 +2814,35 @@ function FocusEditPanel(props: FocusEditPanelProps) {
         <Typography variant="caption" sx={{ color: 'text.secondary' }}>
           段 #{seg.id} · {statusCfg.label}
         </Typography>
+        {/* 原文层级标注按钮组（临时分析辅助，切换段自动清空） */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25, ml: 0.5, pl: 0.5, borderLeft: 1, borderColor: 'divider' }}>
+          <Tooltip title="一级标注（红底白字）：选中原文后点击">
+            <IconButton size="small" onClick={() => handleAddMark(1)} sx={{ p: 0.25, color: '#f44336' }}><LooksOneIcon sx={{ fontSize: 16 }} /></IconButton>
+          </Tooltip>
+          <Tooltip title="二级标注（蓝底白字）：选中原文后点击">
+            <IconButton size="small" onClick={() => handleAddMark(2)} sx={{ p: 0.25, color: '#1976d2' }}><LooksTwoIcon sx={{ fontSize: 16 }} /></IconButton>
+          </Tooltip>
+          <Tooltip title="三级标注（绿底白字）：选中原文后点击">
+            <IconButton size="small" onClick={() => handleAddMark(3)} sx={{ p: 0.25, color: '#4caf50' }}><Looks3Icon sx={{ fontSize: 16 }} /></IconButton>
+          </Tooltip>
+          <Tooltip title={allGapsHidden ? '展开全部非标注文本' : '折叠全部非标注文本'}>
+            <span>
+              <IconButton size="small" onClick={handleCollapseAll} disabled={!hasMarks} sx={{ p: 0.25, color: 'text.disabled' }}>
+                {allGapsHidden ? <UnfoldMoreIcon sx={{ fontSize: 16 }} /> : <UnfoldLessIcon sx={{ fontSize: 16 }} />}
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title="删除选中标注">
+            <span>
+              <IconButton size="small" onClick={handleDeleteSelected} disabled={!selectedMarkId} sx={{ p: 0.25, color: 'error.main' }}><DeleteOutlineIcon sx={{ fontSize: 16 }} /></IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title="清空全部标注">
+            <span>
+              <IconButton size="small" onClick={() => setShowClearConfirm(true)} disabled={!hasMarks} sx={{ p: 0.25, color: 'error.main' }}><DeleteSweepIcon sx={{ fontSize: 16 }} /></IconButton>
+            </span>
+          </Tooltip>
+        </Box>
         <Box sx={{ flex: 1 }} />
         {/* 导航文本按钮（浅灰样式，可点击） */}
         <Tooltip title="跳转至上一段（Shift+Enter / Shift+Tab）">
@@ -2354,6 +2907,7 @@ function FocusEditPanel(props: FocusEditPanelProps) {
 
         {/* 原文内容（聚焦编辑台：始终高亮术语） */}
         <Box
+          ref={(e) => { focusSourceBoxRef.current = e as HTMLElement | null }}
           onMouseUp={onSourceMouseUp}
           sx={{
             gridColumn: 2, gridRow: 2,
@@ -2366,12 +2920,23 @@ function FocusEditPanel(props: FocusEditPanelProps) {
             maxHeight: 120, overflow: 'auto',
           }}
         >
-          <SourceTextWithTerms
-            text={seg.source}
-            terms={terms}
-            enable={true}
-            onInsertTarget={onInsertTermTarget}
-          />
+          {hasMarks ? (
+            <SourceTextWithMarks
+              text={plainSource}
+              marks={marks}
+              hiddenGaps={hiddenGaps}
+              selectedMarkId={selectedMarkId}
+              onMarkClick={handleMarkClick}
+              onGapClick={handleGapClick}
+            />
+          ) : (
+            <SourceTextWithTerms
+              text={plainSource}
+              terms={terms}
+              enable={true}
+              onInsertTarget={onInsertTermTarget}
+            />
+          )}
         </Box>
 
         {/* 译文按钮条 */}
@@ -2423,6 +2988,20 @@ function FocusEditPanel(props: FocusEditPanelProps) {
           {seg.notes || ''}
         </Box>
       </Box>
+
+      {/* 清空全部标注确认弹窗 */}
+      <Dialog open={showClearConfirm} onClose={() => setShowClearConfirm(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>清空全部标注</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            确定要清空当前段的全部层级标注吗？此操作不可撤销。
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowClearConfirm(false)} color="inherit">取消</Button>
+          <Button onClick={handleClearAll} color="error" variant="contained">清空</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   )
 }

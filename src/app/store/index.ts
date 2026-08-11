@@ -23,15 +23,18 @@ export {
   MT_EMBED_UNSUPPORTED,
 } from './machineTranslation'
 export type { MtMode, MtWebState, MtApiState } from './machineTranslation'
+export { COMMON_LANGUAGES, toBaiduLang, toCaiyunTransType } from './languages'
+export type { LangOption } from './languages'
 export {
   useAiQAStore,
   AI_PROVIDER_META,
   AI_EXPLAIN_SYSTEM_PROMPT,
   AI_TRANSLATE_SYSTEM_PROMPT,
+  TRANSLATE_PRESETS,
   AI_WEB_EMBED_UNSUPPORTED,
   callAiChat,
 } from './aiQA'
-export type { AiQaMode, AiProviderCfg, AiProviderKey, AiProviderMeta } from './aiQA'
+export type { AiQaMode, AiProviderCfg, AiProviderKey, AiProviderMeta, TokenUsage, AiChatResult } from './aiQA'
 export {
   dispatchLinkage,
   dispatchSegmentActivated,

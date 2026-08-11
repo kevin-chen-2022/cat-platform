@@ -20,6 +20,8 @@ import { useAiQAStore } from './aiQA'
 import { useMachineTranslationStore } from './machineTranslation'
 import { useDictionaryStore } from './dictionary'
 import { useEditorContextStore } from './editorContext'
+import { useQAStore } from './qa'
+import { useTermStore } from './term'
 import { needsTranslation, htmlToPlainText } from '@/shared/utils/segmentFilter'
 
 // ---- 事件类型 ----
@@ -107,12 +109,30 @@ function sendToFragmentSearch(payload: SourceSelectedPayload): void {
   useLinkageFragmentSearchStore.getState().setKeyword(keyword)
 }
 
+/** QA质检：激活新段 → 若跟随模式开启，对当前段执行规则质检 + AI质检（按当前设置） */
+function sendToQA(payload: SegmentActivatedPayload): void {
+  if (payload.segmentId == null) return
+  const qa = useQAStore.getState()
+  // 仅在跟随模式开启时自动质检；关闭时保持现有结果不动
+  if (!qa.followMode) return
+  const p = useProjectStore.getState()
+  const seg = p.segments.find((s) => s.id === payload.segmentId)
+  if (!seg) return
+  const terms = useTermStore.getState().terms
+  qa.scanSegment(seg, terms)
+  // 跟随模式下，AI质检也自动触发（runAiCheckForSegment 内部会实时读取 aiEnabled）
+  qa.runAiCheckForSegment(seg).catch(() => {
+    // 联动场景静默失败，不弹通知打扰用户
+  })
+}
+
 // ---- 规则表 ----
 // 新增联动只需在此数组追加一行，无需修改分发器
 const LINKAGE_RULES: LinkageRule[] = [
   { event: 'segmentActivated', targetTabId: 'aitranslate', action: (p) => sendToAiTranslate(p as SegmentActivatedPayload) },
   { event: 'segmentActivated', targetTabId: 'tm', action: (p) => sendToTM(p as SegmentActivatedPayload) },
   { event: 'segmentActivated', targetTabId: 'mt', action: (p) => sendToMachineTranslate(p as SegmentActivatedPayload) },
+  { event: 'segmentActivated', targetTabId: 'qa', action: (p) => sendToQA(p as SegmentActivatedPayload) },
   { event: 'sourceSelected', targetTabId: 'aiqa', action: (p) => sendToAiQA(p as SourceSelectedPayload) },
   { event: 'sourceSelected', targetTabId: 'dict', action: (p) => sendToDict(p as SourceSelectedPayload) },
   { event: 'sourceSelected', targetTabId: 'fragmentSearch', action: (p) => sendToFragmentSearch(p as SourceSelectedPayload) },
@@ -349,6 +369,23 @@ function reverseFragmentSearch(): boolean {
   return true
 }
 
+/** QA质检反向：激活 qa tab → 对当前段执行规则质检（新内容才触发，避免重复扫描） */
+function reverseQA(): boolean {
+  const p = useProjectStore.getState()
+  const id = p.activeSegmentId
+  if (id == null) return false
+  const seg = p.segments.find((s) => s.id === id)
+  if (!seg) return false
+  const s = useQAStore.getState()
+  // 相同段且近期已扫描则跳过（5秒内）
+  if (s.lastScanTargetId === id && s.scanScope === 'segment' && Date.now() - s.lastScanAt < 5000) return false
+  // 跟随模式开启时不主动触发（切换段时已自动质检）
+  if (s.followMode) return false
+  const terms = useTermStore.getState().terms
+  s.scanSegment(seg, terms)
+  return true
+}
+
 // ---- 反向规则表 ----
 // 新增反向联动只需在此数组追加一行
 const REVERSE_LINKAGE_RULES: ReverseLinkageRule[] = [
@@ -358,6 +395,7 @@ const REVERSE_LINKAGE_RULES: ReverseLinkageRule[] = [
   { targetTabId: 'aiqa', action: reverseAiQA },
   { targetTabId: 'dict', action: reverseDict },
   { targetTabId: 'fragmentSearch', action: reverseFragmentSearch },
+  { targetTabId: 'qa', action: reverseQA },
 ]
 
 /**

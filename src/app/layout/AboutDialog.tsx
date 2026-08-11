@@ -173,7 +173,7 @@ const USAGE_SECTIONS: Array<{
           { name: '机器翻译', desc: '集成百度、有道、彩云等多个机器翻译引擎。支持源/目标语言选择（默认跟随项目语言对，可手动调整并一键交换），支持正向联动（点击段落自动翻译）和反向联动。' },
           { name: 'AI 翻译', desc: '基于大语言模型（DeepSeek / 豆包 / 通义 / 智谱）的智能翻译。支持源/目标语言选择（默认跟随项目语言对，可手动调整并一键交换）、自定义 Prompt、术语套用（自动注入命中术语）、批量自动翻译。' },
           { name: 'AI 问答', desc: '向 AI 提问翻译相关问题，支持上下文对话、原文语境引用。结果以 Markdown 渲染。' },
-          { name: 'QA 质检', desc: '自动检测翻译质量问题，如术语一致性、数字标点、漏译等。' },
+          { name: 'QA 质检', desc: '自动检测翻译质量问题。规则质检覆盖术语一致性、数字/标签丢失、空译文、重复译文、长度比例异常；AI 质检可启用大模型深度检查（可自定义提示词，显示 token 用量）。支持跟随模式（切换段自动质检当前段）、全文件批量质检、根据质检结果自动标注段状态、结果按段分组并一键跳转。' },
           { name: '项目词典库', desc: '项目级术语库管理，独立于全局术语库，随项目导入导出。' },
           { name: '项目记忆库', desc: '项目级翻译记忆库管理，独立于全局记忆库，随项目导入导出。' },
           { name: '设置', desc: '配置 AI 接口、机器翻译 API、词典源、字体字号、深浅主题、显示选项等。支持设置导入导出。' },
@@ -254,6 +254,54 @@ const USAGE_SECTIONS: Array<{
           <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>剪贴板读取失败的兜底</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
             若浏览器因安全策略拒绝直接读取剪贴板（如非 HTTPS 环境、权限被拒），会弹出一个多行文本框，可手动粘贴（Ctrl+V）内容后点击「导入」。
+          </Typography>
+        </Box>
+      </Box>
+    ),
+  },
+  {
+    id: 'qa',
+    title: 'QA 质检',
+    summary: '规则质检 + AI 质检，覆盖单段跟随与全文件批量',
+    render: () => (
+      <Box>
+        <Typography variant="body2" component="div" sx={{ mb: 2 }}>
+          QA 质检卡片提供规则质检与 AI 质检两套机制，可单独使用，也可组合使用。结果按段分组展示，每条问题可标记已解决，支持一键跳转到对应段。
+        </Typography>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>规则质检（内置）</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            自动检查：术语一致性（未用约定译法）、数字丢失、HTML 标签/占位符丢失、空译文、相同原文存在多种译文（重复检测，仅全文件质检时触发）、译文长度比例异常（过短疑似漏译、过长疑似冗余）。规则质检即时完成，不消耗 token。
+          </Typography>
+        </Box>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>AI 质检（可选）</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            展开「AI 质检」开关后，质检会调用已启用的 AI 服务商（DeepSeek / 豆包 / 通义 / 智谱）对原文+译文做深度检查，可发现漏译、错译、语法、风格等规则无法覆盖的问题。提示词可自定义，结果以紫色 AI 标签区分于机器质检，并显示单次 token 用量（↑prompt ↓completion 共total）。AI 无问题时会返回一条 info 提示，避免误以为未跑 AI。
+          </Typography>
+        </Box>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>质检当前段（跟随模式）</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            点击「质检当前段」按钮即开启跟随模式（按钮变为蓝色实心「跟随当前段 ✓」）：立即对当前段质检一次，且之后每切换一段都会自动质检（规则 + AI 按当前设置）。再次点击关闭。跟随模式与全文件质检互斥：启动全文件质检会自动退出跟随模式。AI 质检进行中时，对应段会显示紫色「AI 质检中…」占位，结果返回后替换为真实问题。
+          </Typography>
+        </Box>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>全文件质检</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            点击「全文件质检」对当前文件所有段批量检查：先同步完成规则质检，再串行逐段执行 AI 质检。进行中按钮自动禁用，并显示「停止」按钮可中途取消。AI 质检中每段先显示占位，完成一条即显示一条（流式反馈）。循环中每次实时读取用户设置，可中途开关 AI 质检，剩余段按最新设置处理。顶部进度条显示「AI质检中 X/N」。
+          </Typography>
+        </Box>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>根据质检结果自动标注</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            开启「根据质检结果自动标注」开关后，质检完成会按问题严重度自动更新段状态：无问题且有译文 → 通过（approved）；存在 error → 驳回（rejected）；仅 warning → 审校中（reviewing）。便于在段列表一眼识别哪些段需要返工。开关默认关闭，状态不会强制覆盖。
+          </Typography>
+        </Box>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>结果操作</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            结果按段分组，每段显示问题数 Chip 和「跳转」按钮（点击跳转到编辑器对应段并激活）。每条问题可点击右侧 ✓ 图标标记为已解决（从列表中隐藏）。点击右上角清空按钮可清空全部结果。AI 质检开关、提示词、自动标注开关、跟随模式均持久化到 localStorage，刷新页面后保留。
           </Typography>
         </Box>
       </Box>

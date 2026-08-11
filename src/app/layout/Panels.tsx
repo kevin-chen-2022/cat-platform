@@ -43,7 +43,13 @@ import PencilIcon from '@mui/icons-material/Edit'
 import SaveAsIcon from '@mui/icons-material/SaveAs'
 import VerticalAlignBottomIcon from '@mui/icons-material/VerticalAlignBottom'
 import WarningIcon from '@mui/icons-material/WarningAmber'
+import ErrorIcon from '@mui/icons-material/Error'
+import InfoIcon from '@mui/icons-material/Info'
+import CheckCircleIcon from '@mui/icons-material/CheckCircle'
+import PlayArrowIcon from '@mui/icons-material/PlayArrow'
+import CleaningServicesIcon from '@mui/icons-material/CleaningServices'
 import FilePresentIcon from '@mui/icons-material/InsertDriveFileOutlined'
+import StopIcon from '@mui/icons-material/Stop'
 import FileDownloadIcon from '@mui/icons-material/FileDownload'
 import { DivBilingualEditor } from '@/features/editor/components/DivBilingualEditor'
 import { ProjectPanel as FeatureProjectPanel } from '@/features/project/components/ProjectPanel'
@@ -60,8 +66,9 @@ import {
   useUiAppearanceStore,
   FONT_PRESETS, DEFAULT_FONT_SIZE, MIN_FONT_SIZE, MAX_FONT_SIZE,
   COMMON_LANGUAGES, toBaiduLang, toCaiyunTransType,
+  useQAStore, AI_QA_CHECK_SYSTEM_PROMPT,
 } from '@app/store'
-import type { OnlineDictState, LocalDictState, MtWebState, MtApiState, AiProviderKey, AiProviderMeta, Term, TokenUsage, LangOption } from '@app/store'
+import type { OnlineDictState, LocalDictState, MtWebState, MtApiState, AiProviderKey, AiProviderMeta, Term, TokenUsage, LangOption, QAIssue } from '@app/store'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import SmartToyIcon from '@mui/icons-material/SmartToy'
 import AutoAwesomeMotionIcon from '@mui/icons-material/AutoAwesomeMotion'
@@ -81,6 +88,7 @@ import { MarkdownRenderer } from '@/shared/components/MarkdownRenderer'
 import { ExpandableText } from '@/shared/components/ExpandableText'
 import { doInsertViaExecCommand } from '@/shared/utils/insertText'
 import { matchTermsForSource, buildTermHint } from '@/shared/utils/termMatch'
+import { htmlToPlainText } from '@/shared/utils/segmentFilter'
 import { similarityScore, searchMemory } from '@/services/tm/engine'
 import { db } from '@data/db'
 import type { Segment, TMEntry, LanguageCode, Project, ID } from '@/types'
@@ -1110,17 +1118,423 @@ function md5Sync(input: string): string {
   return hex(md51(toUtf8(input)))
 }
 
+/** 质检问题类型标签映射 */
+const QA_TYPE_LABEL: Record<QAIssue['type'], string> = {
+  term_mismatch: '术语不一致',
+  number_mismatch: '数字丢失',
+  tag_mismatch: '标签丢失',
+  empty_target: '空译文',
+  duplicate: '重复译文',
+  length_ratio: '长度异常',
+  custom: 'AI质检',
+}
+
+/** 严重度 → 图标 + 颜色 */
+function SeverityIcon({ severity }: { severity: QAIssue['severity'] }): ReactElement {
+  if (severity === 'error') return <ErrorIcon fontSize="small" color="error" />
+  if (severity === 'warning') return <WarningIcon fontSize="small" color="warning" />
+  return <InfoIcon fontSize="small" color="info" />
+}
+
 export function QAPanel(): ReactElement {
+  const issues = useQAStore((s) => s.issues)
+  const loading = useQAStore((s) => s.loading)
+  const scanScope = useQAStore((s) => s.scanScope)
+  const scanSegment = useQAStore((s) => s.scanSegment)
+  const scanSegments = useQAStore((s) => s.scanSegments)
+  const resolveIssue = useQAStore((s) => s.resolveIssue)
+  const clearIssues = useQAStore((s) => s.clearIssues)
+  const aiEnabled = useQAStore((s) => s.aiEnabled)
+  const aiPrompt = useQAStore((s) => s.aiPrompt)
+  const aiTokenUsage = useQAStore((s) => s.aiTokenUsage)
+  const setAiEnabled = useQAStore((s) => s.setAiEnabled)
+  const setAiPrompt = useQAStore((s) => s.setAiPrompt)
+  const resetAiPrompt = useQAStore((s) => s.resetAiPrompt)
+  const autoLabelEnabled = useQAStore((s) => s.autoLabelEnabled)
+  const setAutoLabelEnabled = useQAStore((s) => s.setAutoLabelEnabled)
+  const followMode = useQAStore((s) => s.followMode)
+  const setFollowMode = useQAStore((s) => s.setFollowMode)
+  const aiChecking = useQAStore((s) => s.aiChecking)
+  const setAiChecking = useQAStore((s) => s.setAiChecking)
+  const abortFileScan = useQAStore((s) => s.abortFileScan)
+  const resetAbort = useQAStore((s) => s.resetAbort)
+  const runAiCheckForSegment = useQAStore((s) => s.runAiCheckForSegment)
+  const notify = useUIStore((s) => s.notify)
+
+  const segments = useProjectStore((s) => s.segments)
+  const selectSegment = useProjectStore((s) => s.selectSegment)
+  const activeSegmentId = useEditorContextStore((s) => s.activeSegmentId)
+  const setActiveSegment = useEditorContextStore((s) => s.setActiveSegment)
+  const terms = useTermStore((s) => s.terms)
+  const providers = useAiQAStore((s) => s.providers)
+  const pKeys = Object.keys(AI_PROVIDER_META) as AiProviderKey[]
+  const activeProviders = useMemo(
+    () => pKeys.filter((k) => providers[k].enabled),
+    [providers, pKeys],
+  )
+
+  // AI 质检输入区折叠（默认折叠）
+  const [showAiSection, setShowAiSection] = useState(false)
+  const [aiRunning, setAiRunning] = useState(false)
+  // 全文件AI质检进度（null=未运行，[0,N]=已完成/总数）
+  const [aiFileProgress, setAiFileProgress] = useState<{ done: number; total: number } | null>(null)
+
+  // 统计
+  const errorCount = issues.filter((i) => !i.resolved && i.severity === 'error').length
+  const warningCount = issues.filter((i) => !i.resolved && i.severity === 'warning').length
+  const infoCount = issues.filter((i) => !i.resolved && i.severity === 'info').length
+
+  // 按段分组（排除已解决）
+  const groupedBySegment = useMemo(() => {
+    const map = new Map<ID, QAIssue[]>()
+    for (const issue of issues) {
+      if (issue.resolved) continue
+      if (!map.has(issue.segmentId)) map.set(issue.segmentId, [])
+      map.get(issue.segmentId)!.push(issue)
+    }
+    return Array.from(map.entries()).sort((a, b) => Number(a[0]) - Number(b[0]))
+  }, [issues])
+
+  // AI 质检（单段）—— 委托 store，UI 层只负责反馈
+  const runAiCheck = async (seg: Segment): Promise<boolean> => {
+    if (!aiEnabled) return false
+    if (activeProviders.length === 0) {
+      notify('error', '未启用任何AI提供商，请在「设置 → AI问答」中启用至少一个')
+      return false
+    }
+    try {
+      return await runAiCheckForSegment(seg)
+    } catch (e: any) {
+      const errorMsg = e?.message || 'AI质检失败，请检查API Key和网络连接'
+      notify('error', errorMsg)
+      console.warn('AI质检失败:', errorMsg)
+      return false
+    }
+  }
+
+  // 质检当前段（一次性，不影响跟随模式状态）
+  const handleScanCurrent = () => {
+    if (activeSegmentId == null) return
+    const seg = segments.find((s) => s.id === activeSegmentId)
+    if (!seg) return
+    scanSegment(seg, terms)
+    // AI 质检（如开启）—— 每次实时读取设置
+    if (aiEnabled) {
+      setAiRunning(true)
+      runAiCheck(seg).finally(() => setAiRunning(false))
+    }
+  }
+
+  // 全文件质检
+  const handleScanFile = () => {
+    // 互斥：启动全文件质检时退出跟随模式
+    if (followMode) setFollowMode(false)
+    resetAbort()
+    scanSegments(segments, terms)
+    // AI 质检（如开启）— 串行逐个段，显示进度；每次实时读取设置，响应用户中途开关AI
+    if (aiEnabled && activeProviders.length > 0) {
+      const targets = segments.filter((s) => s.source?.trim() && s.target?.trim())
+      if (targets.length === 0) return
+      // 开始前：批量设置 AI 质检中标志，让每段都显示loading占位（流式逐条反馈）
+      setAiChecking(targets.map((t) => t.id!), true)
+      setAiFileProgress({ done: 0, total: targets.length })
+      setAiRunning(true)
+      ;(async () => {
+        try {
+          for (let i = 0; i < targets.length; i++) {
+            // 检查中止标志
+            if (useQAStore.getState().fileScanAborted) break
+            // 每次实时读取 aiEnabled，响应用户中途调整
+            if (useQAStore.getState().aiEnabled) {
+              await runAiCheck(targets[i])
+            } else {
+              // 用户中途关闭AI，清除该段checking标志
+              setAiChecking([targets[i].id!], false)
+            }
+            setAiFileProgress({ done: i + 1, total: targets.length })
+          }
+        } finally {
+          setAiRunning(false)
+          resetAbort()
+          // 收尾：清除所有残余 checking 标志（中止、中途关AI都可能残留）
+          setAiChecking(targets.map((t) => t.id!), false)
+          setTimeout(() => setAiFileProgress(null), 3000)
+        }
+      })()
+    }
+  }
+
+  // 停止全文件质检
+  const handleStopScan = () => {
+    abortFileScan()
+  }
+
+  // 跳转到段：同步设置 projectStore（编辑器主状态） + editorContext
+  const handleJumpTo = (segId: ID) => {
+    selectSegment(segId)
+    setActiveSegment(segId)
+  }
+
   return (
-    <Box sx={_sty}>
+    <Box sx={{
+      ..._sty,
+      display: 'flex',
+      flexDirection: 'column',
+      p: 1.5,
+      '@global': {
+        '@keyframes qaDots': {
+          '0%': { letterSpacing: 0, opacity: 0.3 },
+          '25%': { letterSpacing: 0, opacity: 0.5 },
+          '50%': { letterSpacing: 0, opacity: 0.7 },
+          '75%': { letterSpacing: 0, opacity: 0.9 },
+          '100%': { letterSpacing: 0, opacity: 0.3 },
+        },
+      },
+    }}>
+      {/* 顶部 header */}
       <Stack className="panel-header" direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-        <AssessmentIcon color="primary" />
-        <Typography variant="h6">QA 质检</Typography>
+        <AssessmentIcon color="primary" fontSize="small" />
+        <Typography variant="subtitle1">QA 质检</Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
+          {errorCount > 0 && <span style={{ color: '#f44336' }}>{errorCount} error</span>}
+          {errorCount > 0 && warningCount > 0 && ' / '}
+          {warningCount > 0 && <span style={{ color: '#ff9800' }}>{warningCount} warn</span>}
+          {(errorCount > 0 || warningCount > 0) && infoCount > 0 && ' / '}
+          {infoCount > 0 && <span style={{ color: '#2196f3' }}>{infoCount} info</span>}
+          {errorCount === 0 && warningCount === 0 && infoCount === 0 && '无问题'}
+        </Typography>
       </Stack>
-      <Divider className="panel-header" sx={{ my: 1 }} />
-      <Typography variant="body2" color="text.secondary">
-        术语一致性、数字/标签丢失、空段、重复词、长度超限等自动校验。
-      </Typography>
+      <Divider sx={{ my: 1 }} />
+
+      {/* 操作按钮 */}
+      <Stack direction="row" spacing={1} sx={{ mb: 1, alignItems: 'center' }}>
+        <Tooltip title={followMode ? '已开启跟随模式：切换段时自动质检当前段。再次点击关闭' : '开启后立即质检当前段，且切换段时自动质检（规则+AI按设置）'}>
+          <Button
+            size="small"
+            variant={followMode ? 'contained' : 'outlined'}
+            color={followMode ? 'primary' : 'inherit'}
+            startIcon={<PlayArrowIcon />}
+            onClick={() => {
+              if (followMode) {
+                setFollowMode(false)
+              } else {
+                setFollowMode(true)
+                // 立即质检当前段一次
+                handleScanCurrent()
+              }
+            }}
+            disabled={activeSegmentId == null || loading || aiRunning}
+          >
+            {followMode ? '跟随当前段 ✓' : '质检当前段'}
+          </Button>
+        </Tooltip>
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={<FilePresentIcon />}
+          onClick={handleScanFile}
+          disabled={segments.length === 0 || loading || aiRunning}
+        >
+          全文件质检
+        </Button>
+        {aiRunning && (
+          <Button
+            size="small"
+            variant="outlined"
+            color="error"
+            startIcon={<StopIcon />}
+            onClick={handleStopScan}
+          >
+            停止
+          </Button>
+        )}
+        <Tooltip title="清空结果">
+          <IconButton size="small" onClick={clearIssues} disabled={issues.length === 0 || aiRunning}>
+            <CleaningServicesIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      </Stack>
+
+      {/* AI 质检（可折叠，默认关闭） */}
+      <Stack
+        direction="row"
+        spacing={0.5}
+        sx={{ alignItems: 'center', mb: showAiSection ? 1 : 0.5 }}
+      >
+        <Tooltip title={showAiSection ? '收起AI质检' : '展开AI质检'}>
+          <IconButton size="small" onClick={() => setShowAiSection((v) => !v)} sx={{ p: 0.5 }}>
+            {showAiSection ? <UnfoldLessIcon fontSize="small" /> : <UnfoldMoreIcon fontSize="small" />}
+          </IconButton>
+        </Tooltip>
+        <FormControlLabel
+          control={<Switch size="small" checked={aiEnabled} onChange={(e) => setAiEnabled(e.target.checked)} />}
+          label={<Typography variant="caption">AI 质检</Typography>}
+          sx={{ mr: 0 }}
+        />
+        {aiRunning && aiFileProgress && (
+          <Typography variant="caption" color="primary">
+            AI质检中 {aiFileProgress.done}/{aiFileProgress.total}
+          </Typography>
+        )}
+        {aiTokenUsage && (
+          <Typography variant="caption" color="text.secondary" sx={{ ml: aiRunning && aiFileProgress ? 1 : 'auto' }}>
+            ↑{aiTokenUsage.prompt_tokens} ↓{aiTokenUsage.completion_tokens} 共{aiTokenUsage.total_tokens}
+          </Typography>
+        )}
+      </Stack>
+      {showAiSection && aiEnabled && (
+        <Box sx={{ mb: 1.5, pl: 0.5 }}>
+          <TextField
+            size="small"
+            multiline
+            minRows={3}
+            maxRows={8}
+            value={aiPrompt}
+            onChange={(e) => setAiPrompt(e.target.value)}
+            placeholder="AI 质检提示词"
+            sx={{ width: '100%', mb: 0.5 }}
+          />
+          <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+            <Button size="small" onClick={resetAiPrompt}>恢复默认</Button>
+            {aiRunning && !aiFileProgress && (
+              <Typography variant="caption" color="primary">AI质检中...</Typography>
+            )}
+          </Stack>
+        </Box>
+      )}
+
+      {/* 自动标注开关 */}
+      <Stack
+        direction="row"
+        spacing={0.5}
+        sx={{ alignItems: 'center', mb: 0.5 }}
+      >
+        <FormControlLabel
+          control={
+            <Switch
+              size="small"
+              checked={autoLabelEnabled}
+              onChange={(e) => setAutoLabelEnabled(e.target.checked)}
+            />
+          }
+          label={<Typography variant="caption">根据质检结果自动标注（无问题→通过/有Error→驳回/警告→审校中）</Typography>}
+          sx={{ mr: 0 }}
+        />
+      </Stack>
+
+      <Divider sx={{ mb: 1 }} />
+
+      {/* 质检结果（按段分组） */}
+      <Box sx={{ flex: 1, overflow: 'auto' }}>
+        {groupedBySegment.length === 0 ? (
+          <EmptyHint text={scanScope ? '质检通过，未发现问题' : '点击「质检当前段」开启跟随模式，或「全文件质检」批量检查'} />
+        ) : (
+          <Stack spacing={1}>
+            {groupedBySegment.map(([segId, segIssues]) => (
+              <Paper key={segId} variant="outlined" sx={{ p: 1 }}>
+                <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mb: 0.5 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                    段 #{segId}
+                  </Typography>
+                  <Chip
+                    label={`${segIssues.length}个问题`}
+                    size="small"
+                    color={segIssues.some((i) => i.severity === 'error') ? 'error' : 'default'}
+                    sx={{ height: 20, fontSize: 11 }}
+                  />
+                  <Button
+                    size="small"
+                    sx={{ ml: 'auto', minWidth: 'auto', p: 0.25, fontSize: 11 }}
+                    onClick={() => handleJumpTo(segId)}
+                  >
+                    跳转
+                  </Button>
+                </Stack>
+                <Stack spacing={0.5}>
+                  {segIssues.map((issue, idx) => (
+                    <Stack
+                      key={idx}
+                      direction="row"
+                      spacing={0.5}
+                      sx={{ alignItems: 'flex-start' }}
+                    >
+                      {issue.type === 'custom' ? (
+                        <SmartToyIcon fontSize="small" color="secondary" sx={{ fontSize: 16 }} />
+                      ) : (
+                        <SeverityIcon severity={issue.severity} />
+                      )}
+                      <Typography variant="caption" sx={{ flex: 1, wordBreak: 'break-word' }}>
+                        {issue.type === 'custom' && (
+                          <Box component="span" sx={{
+                            display: 'inline-block',
+                            fontSize: 10,
+                            lineHeight: '14px',
+                            px: 0.5,
+                            mr: 0.5,
+                            borderRadius: 0.5,
+                            bgcolor: 'secondary.main',
+                            color: 'secondary.contrastText',
+                            verticalAlign: 'middle',
+                          }}>
+                            AI
+                          </Box>
+                        )}
+                        <Box component="span" sx={{ fontWeight: 600, mr: 0.5 }}>
+                          {QA_TYPE_LABEL[issue.type]}:
+                        </Box>
+                        {issue.message}
+                      </Typography>
+                      <Tooltip title="标记已解决">
+                        <IconButton
+                          size="small"
+                          sx={{ p: 0.25 }}
+                          onClick={() => resolveIssue(segId, issue.type, issue.message)}
+                        >
+                          <CheckCircleIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
+                        </IconButton>
+                      </Tooltip>
+                    </Stack>
+                  ))}
+                  {/* AI 质检中占位 */}
+                  {aiChecking[String(segId)] && (
+                    <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+                      <SmartToyIcon fontSize="small" color="secondary" sx={{ fontSize: 16 }} />
+                      <Typography
+                        variant="caption"
+                        color="secondary"
+                        sx={{ flex: 1, display: 'flex', alignItems: 'center' }}
+                      >
+                        <Box component="span" sx={{
+                          display: 'inline-block',
+                          fontSize: 10,
+                          lineHeight: '14px',
+                          px: 0.5,
+                          mr: 0.5,
+                          borderRadius: 0.5,
+                          bgcolor: 'secondary.main',
+                          color: 'secondary.contrastText',
+                        }}>
+                          AI
+                        </Box>
+                        质检中
+                        <Box component="span" sx={{
+                          display: 'inline-block',
+                          ml: 0.25,
+                          width: '1.2em',
+                          textAlign: 'left',
+                          animation: 'qaDots 1.2s steps(4, end) infinite',
+                        }}>
+                          ...
+                        </Box>
+                      </Typography>
+                    </Stack>
+                  )}
+                </Stack>
+              </Paper>
+            ))}
+          </Stack>
+        )}
+      </Box>
     </Box>
   )
 }

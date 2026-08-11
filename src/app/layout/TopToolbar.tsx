@@ -34,6 +34,7 @@ import FileIcon from '@mui/icons-material/InsertDriveFile'
 import ViewIcon from '@mui/icons-material/ViewQuilt'
 import SettingsIcon from '@mui/icons-material/Settings'
 import InfoIcon from '@mui/icons-material/Info'
+import RestartIcon from '@mui/icons-material/RestartAlt'
 import SaveLayoutIcon from '@mui/icons-material/SaveAs'
 import RestoreLayoutIcon from '@mui/icons-material/Restore'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined'
@@ -415,6 +416,13 @@ export function TopToolbar(): ReactElement {
     } finally {
       setImportUserSettingsSubmitting(false)
     }
+  }
+
+  /* ===== 工具菜单 动作 ===== */
+  const actRestartWorkbench = () => {
+    closeAllMenus()
+    if (!window.confirm('确认重启工作台？未保存的数据可能丢失。')) return
+    window.location.reload()
   }
 
   /* ===== 文件菜单 动作 ===== */
@@ -850,6 +858,10 @@ export function TopToolbar(): ReactElement {
           <MenuItem onClick={() => { setToolsAnchor(null); notify('info', 'WebDAV 同步功能预留，稍后开放') }}>
             <ListItemIcon><CloudSyncIcon fontSize="small" /></ListItemIcon>
             <ListItemText>WebDAV 同步 (预留)</ListItemText>
+          </MenuItem>
+          <MenuItem onClick={actRestartWorkbench}>
+            <ListItemIcon><RestartIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>重启工作台</ListItemText>
           </MenuItem>
           <MenuItem onClick={() => { setToolsAnchor(null); setAboutOpen(true) }}>
             <ListItemIcon><InfoIcon fontSize="small" /></ListItemIcon>

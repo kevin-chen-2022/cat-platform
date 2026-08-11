@@ -36,6 +36,11 @@ export {
 } from './aiQA'
 export type { AiQaMode, AiProviderCfg, AiProviderKey, AiProviderMeta, TokenUsage, AiChatResult } from './aiQA'
 export {
+  useQAStore,
+  AI_QA_CHECK_SYSTEM_PROMPT,
+} from './qa'
+export type { QAIssue } from '@/types'
+export {
   dispatchLinkage,
   dispatchSegmentActivated,
   dispatchSourceSelected,

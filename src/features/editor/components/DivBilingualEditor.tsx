@@ -2029,8 +2029,6 @@ export function DivBilingualEditor(): ReactElement {
         height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        fontSize: '14px',
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif',
         color: textColor,
         bgcolor: rowBg,
       }}
@@ -2815,7 +2813,7 @@ function FocusEditPanel(props: FocusEditPanelProps) {
           段 #{seg.id} · {statusCfg.label}
         </Typography>
         {/* 原文层级标注按钮组（临时分析辅助，切换段自动清空） */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25, ml: 0.5, pl: 0.5, borderLeft: 1, borderColor: 'divider' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, gap: 0.25, pl: 0.5, borderLeft: 1, borderColor: 'divider' }}>
           <Tooltip title="一级标注（红底白字）：选中原文后点击">
             <IconButton size="small" onClick={() => handleAddMark(1)} sx={{ p: 0.25, color: '#f44336' }}><LooksOneIcon sx={{ fontSize: 16 }} /></IconButton>
           </Tooltip>
@@ -2843,7 +2841,6 @@ function FocusEditPanel(props: FocusEditPanelProps) {
             </span>
           </Tooltip>
         </Box>
-        <Box sx={{ flex: 1 }} />
         {/* 导航文本按钮（浅灰样式，可点击） */}
         <Tooltip title="跳转至上一段（Shift+Enter / Shift+Tab）">
           <Typography
@@ -2915,7 +2912,7 @@ function FocusEditPanel(props: FocusEditPanelProps) {
             borderBottom: 1, borderColor: 'divider',
             wordBreak: 'break-word', whiteSpace: 'pre-wrap',
             color: secondaryColor,
-            fontSize: '0.9rem', lineHeight: 1.6,
+            fontSize: 'var(--app-content-font-size)', lineHeight: 1.6,
             userSelect: 'text',
             maxHeight: 120, overflow: 'auto',
           }}
@@ -3090,7 +3087,7 @@ function StackModeRow(props: SharedRowProps) {
           wordBreak: 'break-word',
           whiteSpace: 'pre-wrap',
           color: secondaryColor,
-          fontSize: '0.875rem',
+          fontSize: 'var(--app-content-font-size)',
           lineHeight: 1.5,
           userSelect: 'text',
           cursor: 'text',
@@ -3167,7 +3164,7 @@ function StackModeRow(props: SharedRowProps) {
           pb: 0.5,
           wordBreak: 'break-word',
           whiteSpace: 'pre-wrap',
-          fontSize: '0.875rem',
+          fontSize: 'var(--app-content-font-size)',
           lineHeight: 1.5,
           cursor: disableEdit ? 'default' : 'text',
           bgcolor: isActive ? selectedBg : 'transparent',
@@ -3321,7 +3318,7 @@ function TableModeRow(props: SharedRowProps) {
           wordBreak: 'break-word',
           whiteSpace: 'pre-wrap',
           color: secondaryColor,
-          fontSize: '0.875rem',
+          fontSize: 'var(--app-content-font-size)',
           lineHeight: 1.5,
           userSelect: 'text',
           cursor: 'text',
@@ -3402,7 +3399,7 @@ function TableModeRow(props: SharedRowProps) {
           borderColor: 'divider',
           wordBreak: 'break-word',
           whiteSpace: 'pre-wrap',
-          fontSize: '0.875rem',
+          fontSize: 'var(--app-content-font-size)',
           lineHeight: 1.5,
           cursor: disableEdit ? 'default' : 'text',
           bgcolor: isActive ? selectedBg : 'transparent',

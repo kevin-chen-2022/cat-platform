@@ -42,7 +42,7 @@ export function EditableDiv({
   onChange,
   placeholder = '',
   minHeight = 24,
-  fontSize = '0.875rem',
+  fontSize = 'var(--app-content-font-size)',
   disabled = false,
   sx,
   onKeyDown,

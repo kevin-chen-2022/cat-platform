@@ -204,7 +204,7 @@ export function MarkdownRenderer({
   const textSx = useMemo<SxProps<Theme>>(() => ({
     lineHeight: variant === 'caption' ? 1.55 : 1.7,
     mb: variant === 'caption' ? 0.5 : 0.85,
-    fontSize: variant === 'caption' ? '0.75rem' : undefined,
+    fontSize: variant === 'caption' ? 'calc(var(--app-content-font-size) * 0.86)' : undefined,
   }), [variant])
 
   return (
@@ -317,7 +317,7 @@ export function MarkdownRenderer({
         tr: ({ children }) => <TableRow hover>{children}</TableRow>,
         th: ({ children }) => (
           <TableCell sx={{
-            fontWeight: 600, fontSize: '0.8rem', py: 0.75, px: 1,
+            fontWeight: 600, fontSize: 'var(--app-content-font-size)', py: 0.75, px: 1,
             borderColor: 'divider', whiteSpace: 'nowrap',
           }}>
             {children}
@@ -325,7 +325,7 @@ export function MarkdownRenderer({
         ),
         td: ({ children }) => (
           <TableCell sx={{
-            fontSize: variant === 'caption' ? '0.75rem' : '0.8rem',
+            fontSize: variant === 'caption' ? 'calc(var(--app-content-font-size) * 0.86)' : 'var(--app-content-font-size)',
             py: 0.75, px: 1, borderColor: 'divider',
             verticalAlign: 'top',
           }}>

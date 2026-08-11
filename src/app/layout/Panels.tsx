@@ -4596,7 +4596,7 @@ export function AITranslatePanel(): ReactElement {
                               )}
                             </Stack>
                           ) : a?.result ? (
-                            <MarkdownRenderer variant="caption">{a.result}</MarkdownRenderer>
+                            <MarkdownRenderer variant="body2">{a.result}</MarkdownRenderer>
                           ) : (
                             <Typography variant="body2" color="text.secondary">
                               {translateTimestamp > 0

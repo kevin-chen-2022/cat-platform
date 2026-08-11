@@ -228,9 +228,9 @@ export function PreviewPanel(): ReactElement {
           <Box
             sx={{
               lineHeight: 1.8,
-              fontSize: '0.9rem',
+              fontSize: 'var(--app-content-font-size)',
               fontFamily: mode === 'mixed'
-                ? '-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif'
+                ? 'inherit'
                 : 'inherit',
             }}
           >

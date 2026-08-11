@@ -419,9 +419,19 @@ export function TopToolbar(): ReactElement {
   }
 
   /* ===== 工具菜单 动作 ===== */
-  const actRestartWorkbench = () => {
+  const actRestartWorkbench = async () => {
     closeAllMenus()
     if (!window.confirm('确认重启工作台？未保存的数据可能丢失。')) return
+    // 先主动同步保存当前布局到 IndexedDB，完成后再重载，
+    // 避免仅依赖 beforeunload 触发的异步 saveLastLayout 在 reload 前未完成
+    try {
+      await Promise.race([
+        useLayoutStore.getState().saveLastLayout(),
+        new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+      ])
+    } catch {
+      /* ignore */
+    }
     window.location.reload()
   }
 

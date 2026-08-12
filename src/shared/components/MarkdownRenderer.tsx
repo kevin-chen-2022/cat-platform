@@ -57,7 +57,8 @@ function normalizeMarkdown(raw: string): string {
   s = s.replace(/\n\s*\*(\S)/g, '\n* $1')
   s = s.replace(/\n\s*\+(\S)/g, '\n+ $1')
   s = s.replace(/\n\s*(\d+)\.(\S)/g, '\n$1. $2')
-  s = s.replace(/^(#{1,6})(\S)/gm, '$1 $2')
+  // (?!#) 防止回溯：## 文本（#后有空格）不会被误拆成 # + # → "# # 文本"
+  s = s.replace(/^(#{1,6})(?!#)(\S)/gm, '$1 $2')
 
   // 行级处理：按行扫描，识别"表格块"和"AI 编号标题"，分别做边界/标准化处理
   const lines = s.split('\n')

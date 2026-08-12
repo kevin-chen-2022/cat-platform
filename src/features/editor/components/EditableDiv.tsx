@@ -26,6 +26,8 @@ interface EditableDivProps {
   dataSegId?: ID
   /** 是否启用富文本模式（使用 innerHTML 同步内容，支持加粗/上标/颜色等格式） */
   richText?: boolean
+  /** 标识编辑器角色，配合 data-seg-id 做 DOM 定位（target=译文区 source=原文区） */
+  dataRole?: 'target' | 'source'
 }
 
 /**
@@ -49,6 +51,7 @@ export function EditableDiv({
   disableTabInsert = false,
   dataSegId,
   richText = false,
+  dataRole,
 }: EditableDivProps): ReactElement {
   const ref = useRef<HTMLDivElement>(null)
   const isComposingRef = useRef(false)
@@ -139,6 +142,7 @@ export function EditableDiv({
       onKeyDown={handleKeyDown}
       onPaste={handlePaste}
       data-seg-id={dataSegId != null ? String(dataSegId) : undefined}
+      data-role={dataRole}
       data-placeholder={showPlaceholder ? placeholder : undefined}
       sx={{
         minHeight,

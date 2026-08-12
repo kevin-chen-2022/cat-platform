@@ -81,6 +81,23 @@ const STATUS_ORDER: SegmentStatus[] = [
 
 type LayoutMode = 'table' | 'stack'
 
+// —— 统一段切换类型定义 ——
+/** 段切换目标 */
+type TransitionTarget =
+  | { type: 'next' }
+  | { type: 'prev' }
+  | { type: 'nextUntranslated' }
+  | { type: 'specific'; id: ID }
+  | { type: 'deselect' }
+
+/** 段切换选项 */
+interface TransitionOptions {
+  /** 提交状态：'translated'=已译, 'draft'=草稿, undefined=不提交仅切换 */
+  status?: SegmentStatus
+  /** 是否自动聚焦目标段译文区 */
+  focusTarget?: boolean
+}
+
 // 行内按钮条统一的紧凑样式（比列头按钮更小，贴合行紧凑布局）
 const inlineBtnSx = { p: 0.15, minWidth: 0, minHeight: 0, bgcolor: 'transparent', '&:hover': { bgcolor: 'action.hover' } }
 const inlineIconSx = { fontSize: 13 }
@@ -620,7 +637,10 @@ function InlineTargetButtons({ onAction, onConfirmNext, segId }: {
         </>
       )}
       {onConfirmNext && (
-        <Tooltip title="确认翻译并转到下一段（Ctrl+Enter）"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onConfirmNext() }}><CheckCircleIcon sx={{ ...inlineIconSx, color: 'success.main' }} /></IconButton></Tooltip>
+        <Tooltip title="确认翻译并转到下一段（Ctrl+Enter）"><IconButton {...btnProps} onClick={(e) => {
+          e.stopPropagation()
+          onConfirmNext()
+        }}><CheckCircleIcon sx={{ ...inlineIconSx, color: 'success.main' }} /></IconButton></Tooltip>
       )}
       <Popover
         open={!!colorAnchor}
@@ -693,7 +713,7 @@ function useSegmentActions(): { runAction: (seg: Segment, action: string) => voi
         state.updateSegment(seg.id!, { target: seg.source, status: 'draft' })
         break
       case 'clearTarget':
-        state.updateSegment(seg.id!, { target: '', status: 'draft' })
+        state.updateSegment(seg.id!, { target: '' })
         break
       case 'undo':
         // 撤销 contenteditable 编辑（浏览器原生撤销栈）
@@ -1461,6 +1481,102 @@ export function DivBilingualEditor(): ReactElement {
   /** 缓存上一次的激活段 ID，用于退出时检测空草稿回退 */
   const prevActiveIdRef = useRef<ID | null>(null)
 
+  // —— 统一段提交/切换原语 ——
+  // 所有段切换路径（键盘/按钮/点击）都经过 transitionTo，确保：
+  // 1. 提交时从 DOM 直接读取译文（不依赖 editingValueRef，避免 ref 滞后/跨段污染）
+  // 2. 当前段 ID 从 store 读取（不依赖闭包 seg，避免 props 过期）
+  // 3. autofocus 标志内聚到 transitionTo，不需调用方手动设置
+
+  /**
+   * 提交指定段的译文到 store。
+   * 优先从 DOM 读取最新值（contenteditable 实时内容），DOM 不可用时 fallback 到 ref。
+   * 仅在显式传入 status 时修改状态（undefined = 仅保存译文，如 handleBlur）。
+   */
+  const commitSegment = useCallback((segId: ID, status?: SegmentStatus, valueOverride?: string) => {
+    const ps = useProjectStore.getState()
+    const latest = ps.segments.find((s) => s.id === segId)
+    if (!latest) return
+
+    let value: string
+    if (valueOverride !== undefined) {
+      value = valueOverride
+    } else {
+      // 从 DOM 读取：用 .isContentEditable 属性过滤（CSS 选择器不可靠）
+      const candidates = document.querySelectorAll<HTMLElement>(
+        `[data-seg-id="${String(segId)}"][data-role="target"]`,
+      )
+      let domValue: string | undefined
+      for (let i = 0; i < candidates.length; i++) {
+        if (candidates[i].isContentEditable) {
+          domValue = candidates[i].innerText
+          break
+        }
+      }
+      // fallback：虚拟滚动卸载时 DOM 不可用，从 ref 读
+      value = domValue ?? (focusEditingRef.current ? focusEditingValueRef.current : editingValueRef.current)
+    }
+
+    const patch: Partial<Segment> = {}
+    if (value !== latest.target) patch.target = value
+    if (status !== undefined && status !== latest.status) patch.status = status
+    if (Object.keys(patch).length > 0) updateSegment(segId, patch)
+  }, [updateSegment])
+
+  /**
+   * 统一段切换原语：提交当前段 → 激活目标段。
+   * 所有切换路径（键盘/按钮/点击/搜索跳转）的唯一入口。
+   */
+  const transitionTo = useCallback((target: TransitionTarget, options?: TransitionOptions) => {
+    // 1. 提交当前段译文（始终提交，status 为 undefined 时仅保存译文不改状态）
+    const currentId = useProjectStore.getState().activeSegmentId
+    if (currentId != null) {
+      commitSegment(currentId, options?.status)
+    }
+
+    // 2. 计算目标段
+    const segs = filteredSegments
+    const idx = segs.findIndex((s) => s.id === currentId)
+    let nextId: ID | null = null
+
+    switch (target.type) {
+      case 'next':
+        nextId = idx >= 0 && idx < segs.length - 1 ? segs[idx + 1].id! : null
+        break
+      case 'prev':
+        nextId = idx > 0 ? segs[idx - 1].id! : null
+        break
+      case 'nextUntranslated': {
+        const searchOrder = [
+          ...segs.slice(idx + 1),
+          ...segs.slice(0, Math.max(0, idx + 1)),
+        ]
+        const found = searchOrder.find((s) => needsTranslation(s))
+        nextId = found?.id ?? null
+        if (!nextId) {
+          useUIStore.getState().notify('info', '没有需要翻译的段落')
+        }
+        break
+      }
+      case 'specific':
+        nextId = target.id
+        break
+      case 'deselect':
+        nextId = null
+        break
+    }
+
+    // 3. 无目标段（且非 deselect）→ 保持当前段
+    if (nextId == null && target.type !== 'deselect') return
+
+    // 4. 设置自动聚焦标志
+    if (options?.focusTarget && nextId != null) {
+      autoFocusTargetRef.current = true
+    }
+
+    // 5. 切换激活段
+    selectSegment(nextId)
+  }, [filteredSegments, selectSegment, commitSegment])
+
   // —— 包装 runAction：拦截 editSource，进入原文编辑态 ——
   const { runAction: baseRunAction } = useSegmentActions()
   const runAction = useCallback((seg: Segment, action: string) => {
@@ -1495,11 +1611,22 @@ export function DivBilingualEditor(): ReactElement {
 
   // 聚焦指定段的译文 contenteditable 编辑区，并将光标置于文本末尾
   // 考虑虚拟滚动可能尚未挂载 DOM，采用重试机制（最多 6 次 × 50ms = 300ms）
+  // 注意：不使用 [contenteditable="true"] CSS 选择器（无法匹配 HTML5 空属性 contenteditable=""），
+  // 改用 DOM 属性 .isContentEditable 遍历判断，优先选择 data-role="target"（译文区）
   const focusTargetEditable = useCallback((segId: ID, attempt = 0) => {
     if (segId == null) return
-    const el = document.querySelector<HTMLElement>(
-      `[data-seg-id="${String(segId)}"][contenteditable="true"]`,
+    const candidates = Array.from(
+      document.querySelectorAll<HTMLElement>(`[data-seg-id="${String(segId)}"]`),
     )
+    // 优先排序：译文区在前，原文区在后
+    candidates.sort((a, b) => {
+      const ar = a.getAttribute('data-role')
+      const br = b.getAttribute('data-role')
+      if (ar === 'target' && br !== 'target') return -1
+      if (br === 'target' && ar !== 'target') return 1
+      return 0
+    })
+    const el = candidates.find((c) => c.isContentEditable) ?? null
     if (el) {
       el.focus()
       // 光标移动到文本末尾
@@ -1519,11 +1646,19 @@ export function DivBilingualEditor(): ReactElement {
   // 同步激活段到编辑器上下文 store（供其他功能块订阅）
   // 仅在 activeSegmentId 变化时触发，不依赖 segments（避免标注状态等字段变化时重复触发联动）
   useEffect(() => {
-    // 退出激活段时：如果旧段为草稿且译文为空，自动回退为未译
+    // 退出激活段时：根据译文是否为空自动修正状态
+    // 规则（仅这两种情形，其余一律不动）：
+    //   1. 译文为空且原状态为 draft → untranslated
+    //   2. 译文非空且原状态为 untranslated → draft
     if (prevActiveIdRef.current != null && prevActiveIdRef.current !== activeSegmentId) {
       const prevSeg = useProjectStore.getState().segments.find((s) => s.id === prevActiveIdRef.current)
-      if (prevSeg && prevSeg.status === 'draft' && !(prevSeg.target ?? '').trim()) {
-        useProjectStore.getState().updateSegment(prevSeg.id!, { status: 'untranslated' })
+      if (prevSeg && prevSeg.id != null) {
+        const hasTarget = !!(prevSeg.target ?? '').trim()
+        if (!hasTarget && prevSeg.status === 'draft') {
+          useProjectStore.getState().updateSegment(prevSeg.id, { status: 'untranslated' })
+        } else if (hasTarget && prevSeg.status === 'untranslated') {
+          useProjectStore.getState().updateSegment(prevSeg.id, { status: 'draft' })
+        }
       }
     }
     prevActiveIdRef.current = activeSegmentId
@@ -1567,34 +1702,14 @@ export function DivBilingualEditor(): ReactElement {
   }, [layout, widths, hiddenStatus, hiddenNotes])
 
   // —— 顶部快捷导航：下一段 / 下一个未译段 ——
+  // 已收口到 transitionTo，保留函数名供顶部工具栏 onClick 调用
   const goNextSegment = useCallback(() => {
-    if (filteredSegments.length === 0) return
-    const seg = activeSegmentId != null ? filteredSegments.find((s) => s.id === activeSegmentId) : null
-    const idx = seg ? filteredSegments.findIndex((s) => s.id === seg.id) : -1
-    const nextIdx = idx < 0 ? 0 : Math.min(idx + 1, filteredSegments.length - 1)
-    autoFocusTargetRef.current = true
-    selectSegment(filteredSegments[nextIdx].id!)
-  }, [filteredSegments, activeSegmentId, selectSegment])
+    transitionTo({ type: 'next' }, { focusTarget: true })
+  }, [transitionTo])
 
   const goNextUntranslated = useCallback(() => {
-    if (filteredSegments.length === 0) {
-      useUIStore.getState().notify('info', '没有需要翻译的段落')
-      return
-    }
-    const seg = activeSegmentId != null ? filteredSegments.find((s) => s.id === activeSegmentId) : null
-    const fromIdx = seg ? filteredSegments.findIndex((s) => s.id === seg.id) : -1
-    const searchOrder = [
-      ...filteredSegments.slice(fromIdx + 1),
-      ...filteredSegments.slice(0, Math.max(0, fromIdx + 1)),
-    ]
-    const found = searchOrder.find((s) => needsTranslation(s))
-    if (found) {
-      autoFocusTargetRef.current = true
-      selectSegment(found.id!)
-    } else {
-      useUIStore.getState().notify('info', '没有需要翻译的段落')
-    }
-  }, [filteredSegments, activeSegmentId, selectSegment])
+    transitionTo({ type: 'nextUntranslated' }, { focusTarget: true })
+  }, [transitionTo])
 
   // 全局快捷键：Ctrl+F 搜索；Ctrl+Shift+M/S 合并/拆分；Ctrl+Shift+Enter 下个未译段
   // 注：useEffect 必须放在 goNextUntranslated 之后，避免"使用前未声明"
@@ -1607,7 +1722,10 @@ export function DivBilingualEditor(): ReactElement {
       }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Enter') {
         const active = document.activeElement as HTMLElement | null
-        if (!active || !active.closest('[contenteditable="true"], input, textarea')) {
+        const tag = active?.tagName ?? ''
+        // 使用 .isContentEditable 替代不可靠的 [contenteditable="true"] CSS 选择器
+        const inEditor = active?.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA'
+        if (!active || !inEditor) {
           e.preventDefault()
           goNextUntranslated()
         }
@@ -1634,32 +1752,23 @@ export function DivBilingualEditor(): ReactElement {
   // —— 操作 ——
 
   // 聚焦编辑台提交（在切换段/进入行内编辑前自动调用）
-  // status 可自定义（如 Ctrl+Enter 传 'translated'），默认 'draft'
-  const handleFocusCommit = useCallback((status: SegmentStatus = 'draft') => {
+  // 已收口到 commitSegment，从 DOM 直接读取译文
+  const handleFocusCommit = useCallback(() => {
     const segId = activeSegmentIdRef.current
     if (segId != null) {
-      const seg = useProjectStore.getState().segments.find((s) => s.id === segId)
-      if (seg && seg.id != null) {
-        const newTarget = focusEditingValueRef.current
-        if (newTarget !== seg.target) {
-          updateSegment(seg.id, { target: newTarget, status })
-        } else if (status !== 'draft' && seg.status !== status) {
-          // 内容未变但状态需变更（如 Ctrl+Enter 标记 translated）
-          updateSegment(seg.id, { status })
-        }
-      }
+      commitSegment(segId)
     }
     setFocusEditing(false)
-  }, [updateSegment])
+  }, [commitSegment])
 
   const handleRowClick = useCallback((segId: ID) => {
     if (focusEditingRef.current) {
       handleFocusCommit()
     }
     if (segId !== activeSegmentIdRef.current) {
-      selectSegment(segId)
+      transitionTo({ type: 'specific', id: segId })
     }
-  }, [selectSegment, handleFocusCommit])
+  }, [handleFocusCommit, transitionTo])
 
   // 译文区点击：始终编辑态下与行点击一致（激活段），保留 prop 以兼容行组件签名
   const handleTargetClick = useCallback((segId: ID) => {
@@ -1674,85 +1783,49 @@ export function DivBilingualEditor(): ReactElement {
     }
   }, [updateSegment])
 
-  // 始终编辑态：commit 仅负责把 ref 里的草稿写入 store，不再切换编辑态
-  // status 可自定义（如 Ctrl+Enter 传 'translated'），默认 'draft'
-  const handleCommit = useCallback((seg: Segment, value: string, status: SegmentStatus = 'draft') => {
-    if (seg.id == null) return
-    const patch: Partial<Segment> = {}
-    if (value !== seg.target) patch.target = value
-    if (status !== seg.status) patch.status = status
-    if (Object.keys(patch).length > 0) updateSegment(seg.id, patch)
-  }, [updateSegment])
-
+  // 行内键盘处理：所有分支收口到 transitionTo
   const handleKeyDown = useCallback(
-    (e: ReactKeyboardEvent, seg: Segment) => {
+    (e: ReactKeyboardEvent, _seg: Segment) => {
       if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
-        // Enter：保存草稿 + 下一段
+        // Enter：保存译文 + 下一段（状态由 effect 自动修正）
         e.preventDefault()
-        handleCommit(seg, editingValueRef.current)
-        const idx = filteredSegments.findIndex((s) => s.id === seg.id)
-        if (idx >= 0 && idx < filteredSegments.length - 1) {
-          autoFocusTargetRef.current = true
-          const nextSeg = filteredSegments[idx + 1]
-          selectSegment(nextSeg.id!)
-        }
+        transitionTo({ type: 'next' }, { focusTarget: true })
       } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'Enter') {
         // Ctrl+Enter：标记已译 + 下一段
         e.preventDefault()
-        const value = editingValueRef.current
-        handleCommit(seg, value, value.trim() ? 'translated' : 'draft')
-        const idx = filteredSegments.findIndex((s) => s.id === seg.id)
-        if (idx >= 0 && idx < filteredSegments.length - 1) {
-          autoFocusTargetRef.current = true
-          const nextSeg = filteredSegments[idx + 1]
-          selectSegment(nextSeg.id!)
-        }
+        transitionTo({ type: 'next' }, { status: 'translated', focusTarget: true })
       } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Enter') {
         // Ctrl+Shift+Enter：标记已译 + 下一个未译段
         e.preventDefault()
-        const value = editingValueRef.current
-        handleCommit(seg, value, value.trim() ? 'translated' : 'draft')
-        autoFocusTargetRef.current = true
-        goNextUntranslated()
+        transitionTo({ type: 'nextUntranslated' }, { status: 'translated', focusTarget: true })
       } else if (e.key === 'Escape') {
         e.preventDefault()
-        selectSegment(null)
+        transitionTo({ type: 'deselect' })
       } else if (e.key === 'Tab') {
         e.preventDefault()
         e.stopPropagation()
-        const idx = filteredSegments.findIndex((s) => s.id === seg.id)
-        const direction = e.shiftKey ? -1 : 1
-        const nextIdx = idx + direction
-        if (nextIdx >= 0 && nextIdx < filteredSegments.length) {
-          handleCommit(seg, editingValueRef.current)
-          autoFocusTargetRef.current = true
-          const nextSeg = filteredSegments[nextIdx]
-          selectSegment(nextSeg.id!)
-        }
+        // Tab：保存译文 + 前/后段（状态由 effect 自动修正）
+        transitionTo(
+          { type: e.shiftKey ? 'prev' : 'next' },
+          { focusTarget: true },
+        )
       }
     },
-    [filteredSegments, selectSegment, handleCommit, goNextUntranslated],
+    [transitionTo],
   )
 
-  // 确认翻译并下一段（InlineTargetButtons"确认"按钮的回调，等价于 Ctrl+Enter）
-  const handleConfirmNext = useCallback((seg: Segment) => {
-    const value = editingValueRef.current
-    handleCommit(seg, value, value.trim() ? 'translated' : 'draft')
-    const idx = filteredSegments.findIndex((s) => s.id === seg.id)
-    if (idx >= 0 && idx < filteredSegments.length - 1) {
-      autoFocusTargetRef.current = true
-      selectSegment(filteredSegments[idx + 1].id!)
-    }
-  }, [filteredSegments, selectSegment, handleCommit])
-
   // —— 原文编辑：确认/取消 ——
-  const handleSourceCommit = useCallback((seg: Segment) => {
+  // 无参版本：从 sourceEditingId 读取当前编辑段，不依赖闭包 seg
+  const handleSourceCommit = useCallback(() => {
+    const segId = sourceEditingId
+    if (segId == null) return
     const val = sourceEditingValueRef.current
-    if (seg.id != null && val !== seg.source) {
-      updateSegment(seg.id, { source: val })
+    const seg = useProjectStore.getState().segments.find((s) => s.id === segId)
+    if (seg && val !== seg.source) {
+      updateSegment(seg.id!, { source: val })
     }
     setSourceEditingId(null)
-  }, [updateSegment])
+  }, [updateSegment, sourceEditingId])
 
   const handleSourceCancel = useCallback(() => {
     setSourceEditingId(null)
@@ -1764,16 +1837,6 @@ export function DivBilingualEditor(): ReactElement {
     focusEditingValueRef.current = seg?.target ?? ''
     setFocusEditing(true)
   }, [])
-
-  const handleFocusNavigate = useCallback((direction: 1 | -1) => {
-    if (activeSegmentIdRef.current == null) return
-    const idx = filteredSegments.findIndex((s) => s.id === activeSegmentIdRef.current)
-    const nextIdx = idx + direction
-    if (nextIdx >= 0 && nextIdx < filteredSegments.length) {
-      autoFocusTargetRef.current = true
-      selectSegment(filteredSegments[nextIdx].id!)
-    }
-  }, [filteredSegments, selectSegment])
 
   // —— 剪贴板翻译：从剪贴板导入 / 导出到剪贴板 ——
   const doImportClipboardText = useCallback(async (text: string) => {
@@ -2534,7 +2597,7 @@ export function DivBilingualEditor(): ReactElement {
                     isActive={isActive}
                     disableEdit={showFocusPanel}
                     showFocusPanel={showFocusPanel}
-                    isSourceEditing={seg.id === sourceEditingId}
+                    isSourceEditing={!showFocusPanel && seg.id === sourceEditingId}
                     textColor={textColor}
                     secondaryColor={secondaryColor}
                     isDark={isDark}
@@ -2545,10 +2608,10 @@ export function DivBilingualEditor(): ReactElement {
                     onRowClick={() => handleRowClick(seg.id!)}
                     onTargetClick={() => handleTargetClick(seg.id!)}
                     onStatusClick={() => handleStatusClick(seg)}
-                    onCommit={(val) => handleCommit(seg, val)}
-                    onConfirmNext={() => handleConfirmNext(seg)}
+                    onCommit={(val) => commitSegment(seg.id!, undefined, val)}
+                    onConfirmNext={() => transitionTo({ type: 'next' }, { status: 'translated', focusTarget: true })}
                     onKeyDown={(e) => handleKeyDown(e, seg)}
-                    onSourceCommit={() => handleSourceCommit(seg)}
+                    onSourceCommit={handleSourceCommit}
                     onSourceCancel={handleSourceCancel}
                     hiddenStatus={hiddenStatus}
                     hiddenNotes={hiddenNotes}
@@ -2561,7 +2624,7 @@ export function DivBilingualEditor(): ReactElement {
                     isActive={isActive}
                     disableEdit={showFocusPanel}
                     showFocusPanel={showFocusPanel}
-                    isSourceEditing={seg.id === sourceEditingId}
+                    isSourceEditing={!showFocusPanel && seg.id === sourceEditingId}
                     textColor={textColor}
                     secondaryColor={secondaryColor}
                     isDark={isDark}
@@ -2572,10 +2635,10 @@ export function DivBilingualEditor(): ReactElement {
                     onRowClick={() => handleRowClick(seg.id!)}
                     onTargetClick={() => handleTargetClick(seg.id!)}
                     onStatusClick={() => handleStatusClick(seg)}
-                    onCommit={(val) => handleCommit(seg, val)}
-                    onConfirmNext={() => handleConfirmNext(seg)}
+                    onCommit={(val) => commitSegment(seg.id!, undefined, val)}
+                    onConfirmNext={() => transitionTo({ type: 'next' }, { status: 'translated', focusTarget: true })}
                     onKeyDown={(e) => handleKeyDown(e, seg)}
-                    onSourceCommit={() => handleSourceCommit(seg)}
+                    onSourceCommit={handleSourceCommit}
                     onSourceCancel={handleSourceCancel}
                     hiddenStatus={hiddenStatus}
                     hiddenNotes={hiddenNotes}
@@ -2594,13 +2657,12 @@ export function DivBilingualEditor(): ReactElement {
         <FocusEditPanel
           seg={activeSegmentId != null ? segments.find((s) => s.id === activeSegmentId) ?? null : null}
           editingValueRef={focusEditingValueRef}
-          onCommit={handleFocusCommit}
+          commitSegment={commitSegment}
+          transitionTo={transitionTo}
           onStatusClick={() => {
             const seg = segments.find((s) => s.id === activeSegmentId)
             if (seg) handleStatusClick(seg)
           }}
-          onNavigate={handleFocusNavigate}
-          onNavigateNextUntranslated={goNextUntranslated}
           runAction={runAction}
           hiddenStatus={hiddenStatus}
           hiddenNotes={hiddenNotes}
@@ -2610,6 +2672,10 @@ export function DivBilingualEditor(): ReactElement {
           selectedBg={selectedBg}
           terms={terms}
           onInsertTermTarget={onInsertTermTarget}
+          sourceEditingId={sourceEditingId}
+          sourceEditingValueRef={sourceEditingValueRef}
+          onSourceCommit={handleSourceCommit}
+          onSourceCancel={handleSourceCancel}
         />
       )}
     </Box>
@@ -2659,10 +2725,9 @@ interface SharedRowProps {
 interface FocusEditPanelProps {
   seg: Segment | null
   editingValueRef: MutableRefObject<string>
-  onCommit: (status?: SegmentStatus) => void
+  commitSegment: (segId: ID, status?: SegmentStatus, valueOverride?: string) => void
+  transitionTo: (target: TransitionTarget, options?: TransitionOptions) => void
   onStatusClick: () => void
-  onNavigate: (direction: 1 | -1) => void
-  onNavigateNextUntranslated: () => void
   runAction: (seg: Segment, action: string) => void
   hiddenStatus: boolean
   hiddenNotes: boolean
@@ -2672,52 +2737,83 @@ interface FocusEditPanelProps {
   selectedBg: string
   terms: Term[]
   onInsertTermTarget: (target: string) => void
+  sourceEditingId: ID | null
+  sourceEditingValueRef: MutableRefObject<string>
+  onSourceCommit: () => void
+  onSourceCancel: () => void
 }
 
 function FocusEditPanel(props: FocusEditPanelProps) {
-  const { seg, editingValueRef, onCommit, onStatusClick, onNavigate, onNavigateNextUntranslated, runAction,
-    hiddenStatus, hiddenNotes, textColor, secondaryColor, isDark, selectedBg, terms, onInsertTermTarget } = props
+  const { seg, editingValueRef, commitSegment, transitionTo, onStatusClick, runAction,
+    hiddenStatus, hiddenNotes, textColor, secondaryColor, isDark, selectedBg, terms, onInsertTermTarget,
+    sourceEditingId, sourceEditingValueRef, onSourceCommit, onSourceCancel } = props
 
   const panelBg = isDark ? '#1a2a3a' : '#f8f9fb'
+
+  // 原文编辑态：自动聚焦到 EditableDiv
+  useEffect(() => {
+    if (seg?.id != null && seg.id === sourceEditingId) {
+      const el = document.querySelector<HTMLElement>(
+        `[data-seg-id="${String(seg.id)}"][data-role="source"]`,
+      )
+      if (el && el.isContentEditable) {
+        el.focus()
+        // 将光标移到末尾
+        const range = document.createRange()
+        range.selectNodeContents(el)
+        range.collapse(false)
+        const sel = window.getSelection()
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+      }
+    }
+  }, [seg?.id, sourceEditingId])
 
   const handleKeyDown = useCallback((e: ReactKeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Enter') {
       // Ctrl+Shift+Enter：标记已译 + 下个未译段
       e.preventDefault()
-      const value = editingValueRef.current
-      onCommit(value.trim() ? 'translated' : 'draft')
-      onNavigateNextUntranslated()
+      transitionTo({ type: 'nextUntranslated' }, { status: 'translated', focusTarget: true })
     } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'Enter') {
       // Ctrl+Enter：标记已译 + 下一段
       e.preventDefault()
-      const value = editingValueRef.current
-      onCommit(value.trim() ? 'translated' : 'draft')
-      onNavigate(1)
+      transitionTo({ type: 'next' }, { status: 'translated', focusTarget: true })
     } else if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
       e.preventDefault()
-      onCommit()
-      onNavigate(1)
+      // Enter：保存译文 + 下一段（状态由 effect 自动修正）
+      transitionTo({ type: 'next' }, { focusTarget: true })
     } else if (e.key === 'Escape') {
       e.preventDefault()
-      if (seg) editingValueRef.current = seg.target ?? ''
-      onCommit()
+      // 回退到原始译文：强制将 store 中的原始值写回 DOM
+      if (seg?.id != null) {
+        const candidates = document.querySelectorAll<HTMLElement>(
+          `[data-seg-id="${String(seg.id)}"][data-role="target"]`,
+        )
+        for (let i = 0; i < candidates.length; i++) {
+          if (candidates[i].isContentEditable && seg.target != null) {
+            candidates[i].innerText = seg.target
+            break
+          }
+        }
+        editingValueRef.current = seg.target ?? ''
+      }
     } else if (e.key === 'Tab') {
       e.preventDefault()
       e.stopPropagation()
-      onCommit()
-      onNavigate(e.shiftKey ? -1 : 1)
+      // Tab：保存译文 + 前/后段（状态由 effect 自动修正）
+      transitionTo({ type: e.shiftKey ? 'prev' : 'next' }, { focusTarget: true })
     }
-  }, [onCommit, onNavigate, onNavigateNextUntranslated, seg, editingValueRef])
+  }, [transitionTo, seg, editingValueRef])
 
   const handleBlur = useCallback(() => {
     setTimeout(() => {
-      const active = document.activeElement as HTMLElement
-      const inEditable = active?.closest('[contenteditable="true"]')
-      if (!inEditable) {
-        onCommit()
+      const active = document.activeElement as HTMLElement | null
+      const inEditable = active?.isContentEditable
+      if (!inEditable && seg?.id != null) {
+        commitSegment(seg.id)
       }
     }, 0)
-  }, [onCommit])
+  }, [seg, commitSegment])
 
   const onTargetAction = useCallback((action: string) => { if (seg) runAction(seg, action) }, [seg, runAction])
 
@@ -2732,13 +2828,16 @@ function FocusEditPanel(props: FocusEditPanelProps) {
   const [showClearConfirm, setShowClearConfirm] = useState(false)
 
   // 切换段时清空所有标注状态，并同步编辑 ref 为新段译文（防止旧段译文残留覆盖新段）
+  // 注意：只依赖 seg?.id 触发初始化，不要依赖 seg?.target——否则 transitionTo 写 store 后
+  // seg.target 变化会触发此 effect，把刚写入的 target 强制回写到 editingValueRef，
+  // 在段切换的并发场景下可能跨段污染或状态倒退。
   useEffect(() => {
     setMarks([])
     setHiddenGaps(new Set())
     setSelectedMarkId(null)
     setShowClearConfirm(false)
     editingValueRef.current = seg?.target ?? ''
-  }, [seg?.id, seg?.target, editingValueRef])
+  }, [seg?.id, editingValueRef])
 
   // 原文纯文本（标注基于纯文本偏移量，与选区追踪一致）
   const plainSource = useMemo(() => htmlToPlainText(seg?.source ?? ''), [seg?.source])
@@ -2944,7 +3043,7 @@ function FocusEditPanel(props: FocusEditPanelProps) {
           <Typography
             component="span"
             variant="caption"
-            onClick={(e) => { e.stopPropagation(); onCommit(); onNavigate(-1) }}
+            onClick={(e) => { e.stopPropagation(); transitionTo({ type: 'prev' }, { focusTarget: true }) }}
             sx={{
               color: 'text.disabled',
               cursor: 'pointer',
@@ -2960,7 +3059,7 @@ function FocusEditPanel(props: FocusEditPanelProps) {
           <Typography
             component="span"
             variant="caption"
-            onClick={(e) => { e.stopPropagation(); onCommit(); onNavigate(1) }}
+            onClick={(e) => { e.stopPropagation(); transitionTo({ type: 'next' }, { focusTarget: true }) }}
             sx={{
               color: 'text.disabled',
               cursor: 'pointer',
@@ -3000,43 +3099,80 @@ function FocusEditPanel(props: FocusEditPanelProps) {
           <InlineSourceButtons onAction={onSourceAction} />
         </Box>
 
-        {/* 原文内容（聚焦编辑台：始终高亮术语） */}
-        <Box
-          ref={(e) => { focusSourceBoxRef.current = e as HTMLElement | null }}
-          onMouseUp={onSourceMouseUp}
-          sx={{
+        {/* 原文内容（聚焦编辑台：编辑态时使用 EditableDiv，否则高亮术语/标注） */}
+        {seg.id === sourceEditingId ? (
+          <Box sx={{
             gridColumn: 2, gridRow: 2,
             px: 1, pb: 0.5,
-            borderBottom: 1, borderColor: 'divider',
-            wordBreak: 'break-word', whiteSpace: 'pre-wrap',
-            color: secondaryColor,
-            fontSize: 'var(--app-content-font-size)', lineHeight: 1.6,
-            userSelect: 'text',
             maxHeight: 120, overflow: 'auto',
-          }}
-        >
-          {hasMarks ? (
-            <SourceTextWithMarks
-              text={plainSource}
-              marks={marks}
-              hiddenGaps={hiddenGaps}
-              selectedMarkId={selectedMarkId}
-              onMarkClick={handleMarkClick}
-              onGapClick={handleGapClick}
+            bgcolor: isDark ? 'rgba(255,152,0,0.10)' : 'rgba(255,152,0,0.06)',
+            borderRadius: 1,
+            border: '1px solid',
+            borderColor: 'warning.main',
+          }}>
+            <EditableDiv
+              value={seg.source}
+              onChange={(v) => { sourceEditingValueRef.current = v }}
+              placeholder="修改原文..."
+              minHeight={24}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSourceCommit() }
+                else if (e.key === 'Escape') { e.preventDefault(); onSourceCancel() }
+              }}
+              dataSegId={seg.id}
+              dataRole="source"
             />
-          ) : (
-            <SourceTextWithTerms
-              text={plainSource}
-              terms={terms}
-              enable={true}
-              onInsertTarget={onInsertTermTarget}
-            />
-          )}
-        </Box>
+            <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, justifyContent: 'flex-end' }}>
+              <Tooltip title="确认（Enter）">
+                <IconButton size="small" onClick={(e) => { e.stopPropagation(); onSourceCommit() }} sx={{ color: 'success.main' }}>
+                  <CheckIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="取消（Esc）">
+                <IconButton size="small" onClick={(e) => { e.stopPropagation(); onSourceCancel() }} sx={{ color: 'text.disabled' }}>
+                  <CloseIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+              </Tooltip>
+            </Stack>
+          </Box>
+        ) : (
+          <Box
+            ref={(e) => { focusSourceBoxRef.current = e as HTMLElement | null }}
+            onMouseUp={onSourceMouseUp}
+            sx={{
+              gridColumn: 2, gridRow: 2,
+              px: 1, pb: 0.5,
+              borderBottom: 1, borderColor: 'divider',
+              wordBreak: 'break-word', whiteSpace: 'pre-wrap',
+              color: secondaryColor,
+              fontSize: 'var(--app-content-font-size)', lineHeight: 1.6,
+              userSelect: 'text',
+              maxHeight: 120, overflow: 'auto',
+            }}
+          >
+            {hasMarks ? (
+              <SourceTextWithMarks
+                text={plainSource}
+                marks={marks}
+                hiddenGaps={hiddenGaps}
+                selectedMarkId={selectedMarkId}
+                onMarkClick={handleMarkClick}
+                onGapClick={handleGapClick}
+              />
+            ) : (
+              <SourceTextWithTerms
+                text={plainSource}
+                terms={terms}
+                enable={true}
+                onInsertTarget={onInsertTermTarget}
+              />
+            )}
+          </Box>
+        )}
 
         {/* 译文按钮条 */}
         <Box sx={{ gridColumn: 2, gridRow: 3, px: 1, pt: 0.5, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <InlineTargetButtons onAction={onTargetAction} segId={seg?.id} onConfirmNext={() => { const v = editingValueRef.current; onCommit(v.trim() ? 'translated' : 'draft'); onNavigate(1) }} />
+          <InlineTargetButtons onAction={onTargetAction} segId={seg?.id} onConfirmNext={() => transitionTo({ type: 'next' }, { status: 'translated', focusTarget: true })} />
         </Box>
 
         {/* 译文内容（始终编辑态） */}
@@ -3062,6 +3198,7 @@ function FocusEditPanel(props: FocusEditPanelProps) {
             disableTabInsert
             dataSegId={seg.id}
             richText
+            dataRole="target"
           />
         </Box>
 
@@ -3108,8 +3245,8 @@ function StackModeRow(props: SharedRowProps) {
 
   const handleBlur = useCallback(() => {
     setTimeout(() => {
-      const active = document.activeElement as HTMLElement
-      const inEditable = active?.closest('[contenteditable="true"]')
+      const active = document.activeElement as HTMLElement | null
+      const inEditable = active?.isContentEditable
       if (!inEditable) {
         onCommit(editingValueRef.current)
       }
@@ -3204,6 +3341,7 @@ function StackModeRow(props: SharedRowProps) {
                 else if (e.key === 'Escape') { e.preventDefault(); onSourceCancel() }
               }}
               dataSegId={seg.id}
+              dataRole="source"
             />
             <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, justifyContent: 'flex-end' }}>
               <Tooltip title="确认（Enter）">
@@ -3279,6 +3417,7 @@ function StackModeRow(props: SharedRowProps) {
             disableTabInsert
             dataSegId={seg.id}
             richText
+            dataRole="target"
           />
         ) : (
           <Box
@@ -3337,8 +3476,8 @@ function TableModeRow(props: SharedRowProps) {
 
   const handleBlur = useCallback(() => {
     setTimeout(() => {
-      const active = document.activeElement as HTMLElement
-      const inEditable = active?.closest('[contenteditable="true"]')
+      const active = document.activeElement as HTMLElement | null
+      const inEditable = active?.isContentEditable
       if (!inEditable) {
         onCommit(editingValueRef.current)
       }
@@ -3435,6 +3574,7 @@ function TableModeRow(props: SharedRowProps) {
                 else if (e.key === 'Escape') { e.preventDefault(); onSourceCancel() }
               }}
               dataSegId={seg.id}
+              dataRole="source"
             />
             <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, justifyContent: 'flex-end' }}>
               <Tooltip title="确认（Enter）">
@@ -3514,6 +3654,7 @@ function TableModeRow(props: SharedRowProps) {
             disableTabInsert
             dataSegId={seg.id}
             richText
+            dataRole="target"
           />
         ) : (
           <Box

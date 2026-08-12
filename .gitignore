@@ -26,6 +26,7 @@ dist-ssr
 # 备份文件与原始副本
 *.bak
 *-原始.*
+*.备份.*
 
 # TypeScript 增量构建缓存
 *.tsbuildinfo

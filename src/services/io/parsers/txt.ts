@@ -25,6 +25,15 @@ function splitParagraphs(text: string): string[] {
     .filter(Boolean)
 }
 
+/**
+ * 检测段落是否包含配对的 md 行内格式标志（加粗/斜体/代码/删除线/链接）。
+ * 用于在句子切分前判断是否应整段保留，避免在格式标志内部切分割裂完整性。
+ * 例如 **血战到底：胡牌即退场；不查叫。** 包含配对的 **，整段保留而非在句号处切断。
+ */
+function hasMdInlineFormat(text: string): boolean {
+  return /(\*\*[\s\S]*?\*\*|__[\s\S]*?__|~~[\s\S]*?~~|`[^`]+`|\[[^\]]+\]\([^)]+\))/.test(text)
+}
+
 function toSegments(text: string, opts: ParseOptions, format: 'txt' | 'md'): ParsedSegment[] {
   const segments: ParsedSegment[] = []
   let idx = 0
@@ -32,7 +41,13 @@ function toSegments(text: string, opts: ParseOptions, format: 'txt' | 'md'): Par
 
   for (const p of paragraphs) {
     if (!p) continue
+    // md 块级标志（标题/列表/引用）：整段保留
     if (format === 'md' && /^(#{1,6}\s|[-*+]\s|\d+\.\s|>)/.test(p)) {
+      segments.push({ index: idx++, source: p, target: '', status: 'untranslated' })
+      continue
+    }
+    // md 行内格式标志（加粗/斜体/代码/删除线/链接）：整段保留，避免割裂格式完整性
+    if (format === 'md' && hasMdInlineFormat(p)) {
       segments.push({ index: idx++, source: p, target: '', status: 'untranslated' })
       continue
     }

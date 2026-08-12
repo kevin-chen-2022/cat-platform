@@ -745,13 +745,21 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   updateSegment: async (id, patch) => {
-    await db.segments.update(id as number, { ...patch, updatedAt: Date.now() })
+    // 先同步更新内存状态，确保后续读取（如 effect 中的 getState()）能拿到最新值
+    // 否则 async 的 db 写入会导致 transitionTo 中 selectSegment 先于 set() 执行，
+    // 造成 effect 读到旧 status/target，误将已译段回退为未译
     const now = Date.now()
     set((s) => ({
       segments: s.segments.map((seg) =>
         seg.id === id ? { ...seg, ...patch, updatedAt: now } : seg,
       ),
     }))
+    // 再异步写入 IndexedDB（失败时仅记日志，不影响内存状态）
+    try {
+      await db.segments.update(id as number, { ...patch, updatedAt: now })
+    } catch (e) {
+      console.error('[updateSegment] DB write failed:', e)
+    }
     // 自动写入翻译记忆库：段 source/target 都非空时，写入 db.tmEntries（唯一索引自动去重）
     try {
       const s = get()

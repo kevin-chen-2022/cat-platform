@@ -246,7 +246,7 @@ export function ImportFileDialog({ open, onClose }: Props): ReactElement | null 
           disabled={
             selectedFiles.length === 0 ||
             isWorking ||
-            (importProgress.stage === 'done' && batchResults.length === 0)
+            batchResults.length > 0
           }
         >
           {selectedFiles.length > 1

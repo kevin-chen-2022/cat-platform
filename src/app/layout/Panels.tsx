@@ -6,7 +6,7 @@ import {
   Tabs, Tab, Paper, Grid, Slider, ToggleButton, ToggleButtonGroup,
   CircularProgress, Dialog, DialogTitle, DialogContent, DialogActions,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
-  Select, MenuItem, FormControl, InputLabel, Chip, Alert,
+  Select, MenuItem, FormControl, InputLabel, Chip, Alert, InputAdornment,
   Menu, Popover, ListItemIcon, ListItemText, Collapse, Switch,
   Autocomplete,
 } from '@mui/material'
@@ -67,8 +67,11 @@ import {
   FONT_PRESETS, DEFAULT_FONT_SIZE, MIN_FONT_SIZE, MAX_FONT_SIZE,
   COMMON_LANGUAGES, toBaiduLang, toCaiyunTransType,
   useQAStore, AI_QA_CHECK_SYSTEM_PROMPT,
+  useLatestTranslationsStore,
+  useSyncStore,
+  WEBDAV_PRESETS,
 } from '@app/store'
-import type { OnlineDictState, LocalDictState, MtWebState, MtApiState, AiProviderKey, AiProviderMeta, Term, TokenUsage, LangOption, QAIssue } from '@app/store'
+import type { OnlineDictState, LocalDictState, MtWebState, MtApiState, AiProviderKey, AiProviderMeta, Term, TokenUsage, LangOption, QAIssue, WebdavPreset, ConnectionStatus } from '@app/store'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import SmartToyIcon from '@mui/icons-material/SmartToy'
 import AutoAwesomeMotionIcon from '@mui/icons-material/AutoAwesomeMotion'
@@ -84,12 +87,16 @@ import DeleteForeverIcon from '@mui/icons-material/DeleteForever'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import HistoryIcon from '@mui/icons-material/History'
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive'
+import CloudSyncIcon from '@mui/icons-material/CloudSync'
+import VisibilityIcon from '@mui/icons-material/Visibility'
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
 import { MarkdownRenderer } from '@/shared/components/MarkdownRenderer'
 import { ExpandableText } from '@/shared/components/ExpandableText'
 import { doInsertViaExecCommand } from '@/shared/utils/insertText'
 import { matchTermsForSource, buildTermHint } from '@/shared/utils/termMatch'
 import { htmlToPlainText } from '@/shared/utils/segmentFilter'
 import { similarityScore, searchMemory } from '@/services/tm/engine'
+import { runConnectionTest } from '@/services/sync/webdav/provider'
 import { db } from '@data/db'
 import type { Segment, TMEntry, LanguageCode, Project, ID } from '@/types'
 import {
@@ -172,6 +179,7 @@ export function TMPanel(): ReactElement {
   const projects = useProjectStore((s) => s.projects)
   const segments = useProjectStore((s) => s.segments)
   const selectSegment = useProjectStore((s) => s.selectSegment)
+  const activeSegmentId = useProjectStore((s) => s.activeSegmentId)
   const activeProject = useMemo(
     () => projects.find((p) => p.id === currentProjectId) ?? null,
     [projects, currentProjectId],
@@ -250,6 +258,18 @@ export function TMPanel(): ReactElement {
       limit: 5,
     })
   }, [querySource, queryTimestamp, effectiveEntries, sourceLang, targetLang, currentProjectId, scope, threshold])
+
+  // 将首个匹配译文写入最近翻译缓存，供编辑器"复制 TM 译文"按钮读取
+  // 校验 querySource 与激活段原文一致后才写入，避免切换段时旧匹配结果错误写入新段缓存
+  useEffect(() => {
+    if (activeSegmentId == null) return
+    const activeSeg = segments.find((s) => s.id === activeSegmentId)
+    if (!activeSeg) return
+    const activeSourcePlain = htmlToPlainText(activeSeg.source).trim()
+    if (!activeSourcePlain || querySource.trim() !== activeSourcePlain) return
+    const firstText = matches.length > 0 ? matches[0].entry.target : ''
+    useLatestTranslationsStore.getState().setLatest('tm', activeSegmentId, firstText)
+  }, [matches, activeSegmentId, querySource, segments])
 
   const scopeLabel = scope === 'project' ? '当前项目' : '全局'
 
@@ -737,6 +757,20 @@ export function MTPanel(): ReactElement {
     activeApiKeys.forEach((k) => runApiTranslate(k, queryText))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryTimestamp, mode])
+
+  // 将首个 API 译文写入最近翻译缓存，供编辑器"复制机器译文"按钮读取
+  // 校验 queryText 与激活段原文一致后才写入，避免切换段时旧结果错误写入新段缓存
+  useEffect(() => {
+    if (activeSegmentId == null) return
+    const activeSeg = useProjectStore.getState().segments.find((s) => s.id === activeSegmentId)
+    if (!activeSeg) return
+    const activeSourcePlain = htmlToPlainText(activeSeg.source).trim()
+    if (!activeSourcePlain || queryText.trim() !== activeSourcePlain) return
+    const firstResult = activeApiKeys
+      .map((k) => apiResults[k]?.result)
+      .find((r) => r && r.trim())
+    useLatestTranslationsStore.getState().setLatest('mt', activeSegmentId, firstResult ?? '')
+  }, [apiResults, activeSegmentId, activeApiKeys, queryText])
 
   // 插入译文到激活段
   const insertToTarget = useCallback((text: string) => {
@@ -3010,6 +3044,22 @@ export function SettingsPanel(): ReactElement {
         </AccordionDetails>
       </Accordion>
 
+      {/* 一级：云端同步（WebDAV 连接与同步功能） */}
+      <Accordion expanded={level1Expanded === 'cloud'} onChange={handleL1Expand('cloud')} disableGutters>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+            <CloudSyncIcon color="primary" fontSize="small" />
+            <Typography variant="subtitle1" sx={{ fontWeight: 500 }}>云端同步</Typography>
+            <Typography variant="caption" color="text.secondary">
+              （WebDAV 项目文件备份 / TM 同步）
+            </Typography>
+          </Stack>
+        </AccordionSummary>
+        <AccordionDetails sx={{ p: 1 }}>
+          <CloudSyncSettingsSection />
+        </AccordionDetails>
+      </Accordion>
+
       {/* 一级：数据备份（自动快照 + 本地备份提醒） */}
       <Accordion expanded={level1Expanded === 'backup'} onChange={handleL1Expand('backup')} disableGutters>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
@@ -3428,6 +3478,213 @@ function DictionarySettingsSection(): ReactElement {
           ))}
         </AccordionDetails>
       </Accordion>
+    </Box>
+  )
+}
+
+/** WebDAV 服务商预设：切换时自动填入占位 URL */
+function WebdavPresetSelect({ value, onChange }: {
+  value: WebdavPreset
+  onChange: (v: WebdavPreset) => void
+}) {
+  const presetKeys = Object.keys(WEBDAV_PRESETS) as WebdavPreset[]
+  return (
+    <FormControl size="small" fullWidth>
+      <InputLabel id="webdav-preset-label">WebDAV 服务商</InputLabel>
+      <Select
+        labelId="webdav-preset-label"
+        label="WebDAV 服务商"
+        value={value}
+        onChange={(e) => onChange(e.target.value as WebdavPreset)}
+      >
+        {presetKeys.map((k) => (
+          <MenuItem key={k} value={k}>{WEBDAV_PRESETS[k].label}</MenuItem>
+        ))}
+      </Select>
+    </FormControl>
+  )
+}
+
+/** 连接状态视觉徽章 */
+function ConnectionStatusBadge({ status, message, lastConnectedAt }: {
+  status: ConnectionStatus
+  message: string
+  lastConnectedAt: number | null
+}) {
+  const colorMap: Record<ConnectionStatus, 'success' | 'warning' | 'error' | 'info' | 'default'> = {
+    idle: 'default',
+    testing: 'info',
+    success: 'success',
+    failed: 'error',
+    cors_blocked: 'warning',
+  }
+  const labelMap: Record<ConnectionStatus, string> = {
+    idle: '未测试',
+    testing: '测试中...',
+    success: '已连接',
+    failed: '连接失败',
+    cors_blocked: 'CORS 受限',
+  }
+  const color = colorMap[status]
+  const label = labelMap[status]
+  const showTime = status === 'success' && lastConnectedAt != null
+  return (
+    <Stack direction="row" spacing={0.75} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
+      <Chip
+        size="small"
+        label={label}
+        color={color === 'default' ? undefined : (color as any)}
+        icon={status === 'testing' ? <CircularProgress size={12} thickness={5} /> : undefined}
+      />
+      {showTime && (
+        <Typography variant="caption" color="text.secondary">
+          {new Date(lastConnectedAt).toLocaleString()}
+        </Typography>
+      )}
+      {message && status !== 'testing' && status !== 'idle' && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', width: '100%' }}>
+          {message}
+        </Typography>
+      )}
+    </Stack>
+  )
+}
+
+/** 云端同步配置区：WebDAV 服务商预设 + URL/账号/密码 + 测试连接按钮 */
+function CloudSyncSettingsSection(): ReactElement {
+  const webdav = useSyncStore((s) => s.webdav)
+  const connectionStatus = useSyncStore((s) => s.connectionStatus)
+  const connectionMessage = useSyncStore((s) => s.connectionMessage)
+  const lastConnectedAt = useSyncStore((s) => s.lastConnectedAt)
+  const setPreset = useSyncStore((s) => s.setPreset)
+  const setWebdav = useSyncStore((s) => s.setWebdav)
+  const clearWebdavPassword = useSyncStore((s) => s.clearWebdavPassword)
+
+  const [showPassword, setShowPassword] = useState(false)
+  const presetHint = WEBDAV_PRESETS[webdav.preset]?.hint
+
+  const onTestClick = async () => {
+    await runConnectionTest()
+  }
+
+  const isTesting = connectionStatus === 'testing'
+
+  return (
+    <Box>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
+        通过 WebDAV 协议将项目文件、翻译记忆库同步到云端。支持坚果云、Nextcloud、ownCloud 以及任意兼容 WebDAV 的云服务。
+      </Typography>
+
+      <Stack direction="column" spacing={1}>
+        <WebdavPresetSelect value={webdav.preset} onChange={setPreset} />
+
+        {presetHint && (
+          <Typography variant="caption" color="warning.main" sx={{ px: 0.5 }}>
+            ⓘ {presetHint}
+          </Typography>
+        )}
+
+        <TextField
+          size="small"
+          label="WebDAV URL"
+          fullWidth
+          value={webdav.url}
+          onChange={(e) => setWebdav({ url: e.target.value })}
+          placeholder={WEBDAV_PRESETS[webdav.preset].urlPlaceholder}
+        />
+
+        <TextField
+          size="small"
+          label="用户名"
+          fullWidth
+          value={webdav.username}
+          onChange={(e) => setWebdav({ username: e.target.value })}
+          placeholder={webdav.preset === 'jianguoyun' ? '坚果云注册邮箱' : '服务器用户名'}
+        />
+
+        <TextField
+          size="small"
+          label={webdav.preset === 'jianguoyun' ? '应用密码' : '密码'}
+          type={showPassword ? 'text' : 'password'}
+          fullWidth
+          value={webdav.password}
+          onChange={(e) => setWebdav({ password: e.target.value })}
+          slotProps={{
+            input: {
+              endAdornment: (
+                <InputAdornment position="end">
+                  <Stack direction="row" spacing={0.25} sx={{ alignItems: 'center' }}>
+                    <IconButton
+                      size="small"
+                      edge="end"
+                      onClick={() => setShowPassword(!showPassword)}
+                      sx={{ p: 0.5 }}
+                    >
+                      {showPassword ? <VisibilityOffIcon sx={{ fontSize: 16 }} /> : <VisibilityIcon sx={{ fontSize: 16 }} />}
+                    </IconButton>
+                    {webdav.password && (
+                      <Tooltip title={webdav.preset === 'jianguoyun' ? '清除应用密码' : '清除密码'}>
+                        <IconButton
+                          size="small"
+                          edge="end"
+                          onClick={clearWebdavPassword}
+                          sx={{ p: 0.5 }}
+                        >
+                          <DeleteForeverIcon sx={{ fontSize: 16 }} color="action" />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                  </Stack>
+                </InputAdornment>
+              ),
+            },
+          }}
+        />
+
+        {/* 操作区：测试连接按钮 + 状态徽章 */}
+        <Stack direction="row" spacing={1} sx={{ alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 0.5 }}>
+          <Button
+            size="small"
+            variant="contained"
+            color="primary"
+            startIcon={isTesting ? <CircularProgress size={14} sx={{ color: 'inherit' }} /> : <SyncIcon />}
+            onClick={onTestClick}
+            disabled={isTesting || !webdav.url || !webdav.username || !webdav.password}
+          >
+            {isTesting ? '测试中...' : '测试连接'}
+          </Button>
+          <ConnectionStatusBadge status={connectionStatus} message={connectionMessage} lastConnectedAt={lastConnectedAt} />
+        </Stack>
+
+        {/* CORS 提示：连接受阻时展示 */}
+        {connectionStatus === 'cors_blocked' && (
+          <Alert severity="warning" sx={{ '& .MuiAlert-message': { fontSize: '0.75rem' } }}>
+            <Typography variant="caption" sx={{ fontWeight: 500, display: 'block', mb: 0.25 }}>
+              什么是 CORS 限制？
+            </Typography>
+            <Typography variant="caption">
+              浏览器出于安全策略，直接跨域访问 WebDAV 服务器需要服务器返回 <code>Access-Control-Allow-Origin</code> 响应头。
+              <br />
+              · Nextcloud 默认自带 CORS 头，通常可直接使用。
+              <br />
+              · 坚果云等服务商在部分场景下可能不支持，可考虑：① 自建反向代理补 CORS 头；② 后续桌面打包版本可绕开此限制。
+            </Typography>
+          </Alert>
+        )}
+      </Stack>
+
+      <Divider sx={{ my: 2 }} />
+
+      <Stack direction="column" spacing={0.5}>
+        <Typography variant="body2" sx={{ fontWeight: 500 }}>
+          后续功能（P2 / P3 规划中）
+        </Typography>
+        <ul style={{ margin: 0, paddingLeft: '1.25rem' }}>
+          <li><Typography variant="caption" color="text.secondary">项目文件手动/自动上传与下载（还原）</Typography></li>
+          <li><Typography variant="caption" color="text.secondary">翻译记忆库定时同步与合并</Typography></li>
+          <li><Typography variant="caption" color="text.secondary">100% 匹配自动填充译文</Typography></li>
+        </ul>
+      </Stack>
     </Box>
   )
 }
@@ -4295,6 +4552,21 @@ export function AITranslatePanel(): ReactElement {
 
   // 各 provider 结果状态
   const [results, setResults] = useState<Record<string, { loading: boolean; result: string; error: string; usage?: TokenUsage }>>({})
+  const activeSegmentId = useProjectStore((s) => s.activeSegmentId)
+
+  // 将首个 AI 译文写入最近翻译缓存，供编辑器"复制 AI 译文"按钮读取
+  // 校验 translateText 与激活段原文一致后才写入，避免切换段时旧结果错误写入新段缓存
+  useEffect(() => {
+    if (activeSegmentId == null) return
+    const activeSeg = useProjectStore.getState().segments.find((s) => s.id === activeSegmentId)
+    if (!activeSeg) return
+    const activeSourcePlain = htmlToPlainText(activeSeg.source).trim()
+    if (!activeSourcePlain || translateText.trim() !== activeSourcePlain) return
+    const firstResult = activeProviders
+      .map((k) => results[k]?.result)
+      .find((r) => r && r.trim())
+    useLatestTranslationsStore.getState().setLatest('ai', activeSegmentId, firstResult ?? '')
+  }, [results, activeSegmentId, activeProviders, translateText])
 
   // 系统 Prompt 持久化到 store（刷新不丢失）
   const translateSystemPrompt = useAiQAStore((s) => s.translateSystemPrompt)

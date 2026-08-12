@@ -7,7 +7,7 @@ import {
   CircularProgress, Dialog, DialogTitle, DialogContent, DialogActions, Button,
   Popover, Badge, Chip,
 } from '@mui/material'
-import { useProjectStore, useUIStore, useEditorContextStore, useTermStore, useLayoutStore, useDictionaryStore, useMachineTranslationStore, useAiQAStore, useLinkageFragmentSearchStore, dispatchSegmentActivated, dispatchSourceSelected, callAiChat } from '@app/store'
+import { useProjectStore, useUIStore, useEditorContextStore, useTermStore, useLayoutStore, useDictionaryStore, useMachineTranslationStore, useAiQAStore, useLinkageFragmentSearchStore, useLatestTranslationsStore, dispatchSegmentActivated, dispatchSourceSelected, callAiChat } from '@app/store'
 import type { Term, AiProviderKey, AiProviderCfg } from '@app/store'
 import type { Segment, SegmentStatus, ID } from '@/types'
 import { db } from '@data/db'
@@ -59,6 +59,11 @@ import UnfoldLessIcon from '@mui/icons-material/UnfoldLess'
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined'
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep'
+import LibraryBooksIcon from '@mui/icons-material/LibraryBooks'
+import MemoryIcon from '@mui/icons-material/Memory'
+import SmartToyIcon from '@mui/icons-material/SmartToy'
+import CheckCircleIcon from '@mui/icons-material/CheckCircle'
+import FormatSizeIcon from '@mui/icons-material/FormatSize'
 
 // —— 常量 ——
 
@@ -571,8 +576,10 @@ function InlineSourceButtons({ onAction }: {
   )
 }
 
-function InlineTargetButtons({ onAction }: {
+function InlineTargetButtons({ onAction, onConfirmNext, segId }: {
   onAction: (action: string) => void
+  onConfirmNext?: () => void
+  segId?: ID
 }) {
   // onMouseDown preventDefault 阻止按钮抢占焦点，确保 execCommand 作用于 contenteditable
   const btnProps = {
@@ -582,20 +589,39 @@ function InlineTargetButtons({ onAction }: {
   }
   // 颜色选择器 Popover 锚点
   const [colorAnchor, setColorAnchor] = useState<HTMLElement | null>(null)
+  // 格式按钮折叠状态（默认折叠）
+  const [showFormat, setShowFormat] = useState(false)
   const isDark = useUIStore((s) => s.theme) === 'dark'
+
+  // 读取各来源最近译文，判断复制按钮是否可用
+  const tmText = useLatestTranslationsStore((s) => (segId != null ? s.entries[`tm:${segId}`]?.text : undefined))
+  const mtText = useLatestTranslationsStore((s) => (segId != null ? s.entries[`mt:${segId}`]?.text : undefined))
+  const aiText = useLatestTranslationsStore((s) => (segId != null ? s.entries[`ai:${segId}`]?.text : undefined))
+
   return (
     <Stack direction="row" spacing={0.05} sx={{ alignItems: 'center' }}>
       <Tooltip title="复制原文到译文"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onAction('copySource') }}><ContentCopyIcon sx={inlineIconSx} /></IconButton></Tooltip>
       <Tooltip title="清空译文"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onAction('clearTarget') }}><ClearIcon sx={inlineIconSx} /></IconButton></Tooltip>
       <Tooltip title="撤销"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onAction('undo') }}><UndoIcon sx={inlineIconSx} /></IconButton></Tooltip>
       <Tooltip title="重做"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onAction('redo') }}><RedoIcon sx={inlineIconSx} /></IconButton></Tooltip>
-      <Tooltip title="字体加粗"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onAction('bold') }}><FormatBoldIcon sx={inlineIconSx} /></IconButton></Tooltip>
-      <Tooltip title="文本变色">
-        <IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); setColorAnchor(e.currentTarget) }}>
-          <FormatColorTextIcon sx={inlineIconSx} />
-        </IconButton>
-      </Tooltip>
-      <Tooltip title="上标"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onAction('superscript') }}><SuperscriptIcon sx={inlineIconSx} /></IconButton></Tooltip>
+      <Tooltip title={tmText ? '复制首个匹配译文' : '无可用翻译记忆译文（请先在翻译记忆卡片触发匹配）'}><span><IconButton {...btnProps} disabled={!tmText} onClick={(e) => { e.stopPropagation(); onAction('copyTM') }}><LibraryBooksIcon sx={inlineIconSx} /></IconButton></span></Tooltip>
+      <Tooltip title={mtText ? '复制机器译文' : '无可用机器译文（请先在机器翻译卡片触发翻译）'}><span><IconButton {...btnProps} disabled={!mtText} onClick={(e) => { e.stopPropagation(); onAction('copyMT') }}><MemoryIcon sx={inlineIconSx} /></IconButton></span></Tooltip>
+      <Tooltip title={aiText ? '复制 AI 译文' : '无可用 AI 译文（请先在 AI 翻译卡片触发翻译）'}><span><IconButton {...btnProps} disabled={!aiText} onClick={(e) => { e.stopPropagation(); onAction('copyAI') }}><SmartToyIcon sx={inlineIconSx} /></IconButton></span></Tooltip>
+      <Tooltip title={showFormat ? '收起格式按钮' : '展开格式按钮（加粗/变色/上标）'}><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); setShowFormat((v) => !v) }}><FormatSizeIcon sx={inlineIconSx} /></IconButton></Tooltip>
+      {showFormat && (
+        <>
+          <Tooltip title="字体加粗"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onAction('bold') }}><FormatBoldIcon sx={inlineIconSx} /></IconButton></Tooltip>
+          <Tooltip title="文本变色">
+            <IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); setColorAnchor(e.currentTarget) }}>
+              <FormatColorTextIcon sx={inlineIconSx} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="上标"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onAction('superscript') }}><SuperscriptIcon sx={inlineIconSx} /></IconButton></Tooltip>
+        </>
+      )}
+      {onConfirmNext && (
+        <Tooltip title="确认翻译并转到下一段（Ctrl+Enter）"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onConfirmNext() }}><CheckCircleIcon sx={{ ...inlineIconSx, color: 'success.main' }} /></IconButton></Tooltip>
+      )}
       <Popover
         open={!!colorAnchor}
         anchorEl={colorAnchor}
@@ -833,6 +859,42 @@ function useSegmentActions(): { runAction: (seg: Segment, action: string) => voi
         // 写入关键词并激活片段搜索 Tab
         useLinkageFragmentSearchStore.getState().setKeyword(keyword)
         showTabInDock('fragmentSearch')
+        break
+      }
+      case 'copyTM':
+      case 'copyMT':
+      case 'copyAI': {
+        if (seg.id == null) return
+        const source = action === 'copyTM' ? 'tm' : action === 'copyMT' ? 'mt' : 'ai'
+        const text = useLatestTranslationsStore.getState().getLatest(source, seg.id)
+        if (!text || !text.trim()) {
+          const label = source === 'tm' ? '翻译记忆' : source === 'mt' ? '机器翻译' : 'AI 翻译'
+          useUIStore.getState().notify('info', `无可用${label}译文，请先在${label}卡片触发翻译`)
+          return
+        }
+        // 与 AI 翻译卡片"发送译文"按钮相同机制：选区优先替换，否则光标插入
+        const editorCtx = useEditorContextStore.getState()
+        const segId = seg.id
+        const finalTargetSel = editorCtx.targetSelection?.segmentId === segId ? editorCtx.targetSelection : null
+        const finalTargetCur =
+          !finalTargetSel && editorCtx.targetCursor?.segmentId === segId
+            ? editorCtx.targetCursor
+            : { segmentId: segId, offset: seg.target.length }
+        // 1) 译文 contenteditable 已挂载：直接 execCommand 插入（支持浏览器原生撤销栈）
+        if (doInsertViaExecCommand(segId, text, finalTargetSel, finalTargetCur)) break
+        // 2) 兜底：段未渲染（离屏）等异常情况直接写 store
+        const s = useProjectStore.getState().segments.find((x) => x.id === segId)
+        if (!s) break
+        const start = finalTargetSel && finalTargetSel.start < finalTargetSel.end
+          ? finalTargetSel.start
+          : Math.max(0, Math.min(finalTargetCur.offset, s.target.length))
+        const end = finalTargetSel && finalTargetSel.start < finalTargetSel.end
+          ? finalTargetSel.end
+          : start
+        useProjectStore.getState().updateSegment(segId, {
+          target: s.target.slice(0, start) + text + s.target.slice(end),
+          status: 'draft',
+        })
         break
       }
       default:
@@ -1572,12 +1634,19 @@ export function DivBilingualEditor(): ReactElement {
   // —— 操作 ——
 
   // 聚焦编辑台提交（在切换段/进入行内编辑前自动调用）
-  const handleFocusCommit = useCallback(() => {
+  // status 可自定义（如 Ctrl+Enter 传 'translated'），默认 'draft'
+  const handleFocusCommit = useCallback((status: SegmentStatus = 'draft') => {
     const segId = activeSegmentIdRef.current
     if (segId != null) {
       const seg = useProjectStore.getState().segments.find((s) => s.id === segId)
-      if (seg && seg.id != null && focusEditingValueRef.current !== seg.target) {
-        updateSegment(seg.id, { target: focusEditingValueRef.current, status: 'draft' })
+      if (seg && seg.id != null) {
+        const newTarget = focusEditingValueRef.current
+        if (newTarget !== seg.target) {
+          updateSegment(seg.id, { target: newTarget, status })
+        } else if (status !== 'draft' && seg.status !== status) {
+          // 内容未变但状态需变更（如 Ctrl+Enter 标记 translated）
+          updateSegment(seg.id, { status })
+        }
       }
     }
     setFocusEditing(false)
@@ -1664,6 +1733,17 @@ export function DivBilingualEditor(): ReactElement {
     },
     [filteredSegments, selectSegment, handleCommit, goNextUntranslated],
   )
+
+  // 确认翻译并下一段（InlineTargetButtons"确认"按钮的回调，等价于 Ctrl+Enter）
+  const handleConfirmNext = useCallback((seg: Segment) => {
+    const value = editingValueRef.current
+    handleCommit(seg, value, value.trim() ? 'translated' : 'draft')
+    const idx = filteredSegments.findIndex((s) => s.id === seg.id)
+    if (idx >= 0 && idx < filteredSegments.length - 1) {
+      autoFocusTargetRef.current = true
+      selectSegment(filteredSegments[idx + 1].id!)
+    }
+  }, [filteredSegments, selectSegment, handleCommit])
 
   // —— 原文编辑：确认/取消 ——
   const handleSourceCommit = useCallback((seg: Segment) => {
@@ -2466,6 +2546,7 @@ export function DivBilingualEditor(): ReactElement {
                     onTargetClick={() => handleTargetClick(seg.id!)}
                     onStatusClick={() => handleStatusClick(seg)}
                     onCommit={(val) => handleCommit(seg, val)}
+                    onConfirmNext={() => handleConfirmNext(seg)}
                     onKeyDown={(e) => handleKeyDown(e, seg)}
                     onSourceCommit={() => handleSourceCommit(seg)}
                     onSourceCancel={handleSourceCancel}
@@ -2492,6 +2573,7 @@ export function DivBilingualEditor(): ReactElement {
                     onTargetClick={() => handleTargetClick(seg.id!)}
                     onStatusClick={() => handleStatusClick(seg)}
                     onCommit={(val) => handleCommit(seg, val)}
+                    onConfirmNext={() => handleConfirmNext(seg)}
                     onKeyDown={(e) => handleKeyDown(e, seg)}
                     onSourceCommit={() => handleSourceCommit(seg)}
                     onSourceCancel={handleSourceCancel}
@@ -2518,6 +2600,7 @@ export function DivBilingualEditor(): ReactElement {
             if (seg) handleStatusClick(seg)
           }}
           onNavigate={handleFocusNavigate}
+          onNavigateNextUntranslated={goNextUntranslated}
           runAction={runAction}
           hiddenStatus={hiddenStatus}
           hiddenNotes={hiddenNotes}
@@ -2560,6 +2643,7 @@ interface SharedRowProps {
   onTargetClick: () => void
   onStatusClick: () => void
   onCommit: (val: string) => void
+  onConfirmNext: () => void
   onKeyDown: (e: ReactKeyboardEvent) => void
   onSourceCommit: () => void
   onSourceCancel: () => void
@@ -2575,9 +2659,10 @@ interface SharedRowProps {
 interface FocusEditPanelProps {
   seg: Segment | null
   editingValueRef: MutableRefObject<string>
-  onCommit: () => void
+  onCommit: (status?: SegmentStatus) => void
   onStatusClick: () => void
   onNavigate: (direction: 1 | -1) => void
+  onNavigateNextUntranslated: () => void
   runAction: (seg: Segment, action: string) => void
   hiddenStatus: boolean
   hiddenNotes: boolean
@@ -2590,16 +2675,28 @@ interface FocusEditPanelProps {
 }
 
 function FocusEditPanel(props: FocusEditPanelProps) {
-  const { seg, editingValueRef, onCommit, onStatusClick, onNavigate, runAction,
+  const { seg, editingValueRef, onCommit, onStatusClick, onNavigate, onNavigateNextUntranslated, runAction,
     hiddenStatus, hiddenNotes, textColor, secondaryColor, isDark, selectedBg, terms, onInsertTermTarget } = props
 
   const panelBg = isDark ? '#1a2a3a' : '#f8f9fb'
 
   const handleKeyDown = useCallback((e: ReactKeyboardEvent) => {
-    if (e.key === 'Enter') {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Enter') {
+      // Ctrl+Shift+Enter：标记已译 + 下个未译段
+      e.preventDefault()
+      const value = editingValueRef.current
+      onCommit(value.trim() ? 'translated' : 'draft')
+      onNavigateNextUntranslated()
+    } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'Enter') {
+      // Ctrl+Enter：标记已译 + 下一段
+      e.preventDefault()
+      const value = editingValueRef.current
+      onCommit(value.trim() ? 'translated' : 'draft')
+      onNavigate(1)
+    } else if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
       e.preventDefault()
       onCommit()
-      onNavigate(e.shiftKey ? -1 : 1)
+      onNavigate(1)
     } else if (e.key === 'Escape') {
       e.preventDefault()
       if (seg) editingValueRef.current = seg.target ?? ''
@@ -2610,7 +2707,7 @@ function FocusEditPanel(props: FocusEditPanelProps) {
       onCommit()
       onNavigate(e.shiftKey ? -1 : 1)
     }
-  }, [onCommit, onNavigate, seg, editingValueRef])
+  }, [onCommit, onNavigate, onNavigateNextUntranslated, seg, editingValueRef])
 
   const handleBlur = useCallback(() => {
     setTimeout(() => {
@@ -2634,13 +2731,14 @@ function FocusEditPanel(props: FocusEditPanelProps) {
   const [selectedMarkId, setSelectedMarkId] = useState<string | null>(null)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
 
-  // 切换段时清空所有标注状态
+  // 切换段时清空所有标注状态，并同步编辑 ref 为新段译文（防止旧段译文残留覆盖新段）
   useEffect(() => {
     setMarks([])
     setHiddenGaps(new Set())
     setSelectedMarkId(null)
     setShowClearConfirm(false)
-  }, [seg?.id])
+    editingValueRef.current = seg?.target ?? ''
+  }, [seg?.id, seg?.target, editingValueRef])
 
   // 原文纯文本（标注基于纯文本偏移量，与选区追踪一致）
   const plainSource = useMemo(() => htmlToPlainText(seg?.source ?? ''), [seg?.source])
@@ -2938,7 +3036,7 @@ function FocusEditPanel(props: FocusEditPanelProps) {
 
         {/* 译文按钮条 */}
         <Box sx={{ gridColumn: 2, gridRow: 3, px: 1, pt: 0.5, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <InlineTargetButtons onAction={onTargetAction} />
+          <InlineTargetButtons onAction={onTargetAction} segId={seg?.id} onConfirmNext={() => { const v = editingValueRef.current; onCommit(v.trim() ? 'translated' : 'draft'); onNavigate(1) }} />
         </Box>
 
         {/* 译文内容（始终编辑态） */}
@@ -3005,7 +3103,7 @@ function FocusEditPanel(props: FocusEditPanelProps) {
 
 function StackModeRow(props: SharedRowProps) {
   const { seg, isActive, disableEdit, showFocusPanel, isSourceEditing, textColor, secondaryColor, isDark, selectedBg, editingValueRef, sourceEditingValueRef, runAction,
-    onRowClick, onTargetClick, onStatusClick, onCommit, onKeyDown, onSourceCommit, onSourceCancel, hiddenStatus, hiddenNotes, terms, onInsertTermTarget } = props
+    onRowClick, onTargetClick, onStatusClick, onCommit, onConfirmNext, onKeyDown, onSourceCommit, onSourceCancel, hiddenStatus, hiddenNotes, terms, onInsertTermTarget } = props
   const statusCfg = STATUS_CONFIG[seg.status]
 
   const handleBlur = useCallback(() => {
@@ -3147,7 +3245,7 @@ function StackModeRow(props: SharedRowProps) {
           ...(isActive ? {} : { pt: 0, pb: 0, maxHeight: 0, opacity: 0 }),
         }}
       >
-        {isActive && !disableEdit && <InlineTargetButtons onAction={onTargetAction} />}
+        {isActive && !disableEdit && <InlineTargetButtons onAction={onTargetAction} segId={seg.id} onConfirmNext={onConfirmNext} />}
       </Box>
 
       {/* row 4: 译文内容（始终编辑态；聚焦编辑台开启时退化为只读） */}
@@ -3234,7 +3332,7 @@ function StackModeRow(props: SharedRowProps) {
 
 function TableModeRow(props: SharedRowProps) {
   const { seg, isActive, disableEdit, showFocusPanel, isSourceEditing, textColor, secondaryColor, isDark, selectedBg, editingValueRef, sourceEditingValueRef, runAction,
-    onRowClick, onTargetClick, onStatusClick, onCommit, onKeyDown, onSourceCommit, onSourceCancel, hiddenStatus, hiddenNotes, terms, onInsertTermTarget } = props
+    onRowClick, onTargetClick, onStatusClick, onCommit, onConfirmNext, onKeyDown, onSourceCommit, onSourceCancel, hiddenStatus, hiddenNotes, terms, onInsertTermTarget } = props
   const statusCfg = STATUS_CONFIG[seg.status]
 
   const handleBlur = useCallback(() => {
@@ -3380,7 +3478,7 @@ function TableModeRow(props: SharedRowProps) {
           ...(isActive ? {} : { pt: 0, pb: 0, maxHeight: 0, opacity: 0 }),
         }}
       >
-        {isActive && !disableEdit && <InlineTargetButtons onAction={onTargetAction} />}
+        {isActive && !disableEdit && <InlineTargetButtons onAction={onTargetAction} segId={seg.id} onConfirmNext={onConfirmNext} />}
       </Box>
 
       {/* row 2: 译文内容（始终编辑态；聚焦编辑台开启时退化为只读） */}

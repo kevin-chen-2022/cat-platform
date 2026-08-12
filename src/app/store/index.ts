@@ -63,3 +63,17 @@ export {
   CSS_VAR_FONT_SIZE,
 } from './uiAppearance'
 export type { FontPreset } from './uiAppearance'
+export {
+  useLatestTranslationsStore,
+} from './latestTranslations'
+export type { LatestSource } from './latestTranslations'
+export {
+  useSyncStore,
+  WEBDAV_PRESETS,
+} from './sync'
+export type {
+  WebdavPreset,
+  WebdavPresetMeta,
+  WebdavConfig,
+  ConnectionStatus,
+} from './sync'

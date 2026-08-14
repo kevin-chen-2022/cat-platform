@@ -1,11 +1,22 @@
 import { useRef } from 'react'
-import { useState, useCallback, useEffect } from 'react'
-import { Paper, Stack, Typography, useTheme, Button, Dialog, DialogTitle, DialogContent, DialogActions, TextField } from '@mui/material'
+import { useState, useCallback, useEffect, useMemo } from 'react'
+import { Paper, Stack, Typography, useTheme, Button, Dialog, DialogTitle, DialogContent, DialogActions, TextField, Tooltip } from '@mui/material'
 import TranslateIcon from '@mui/icons-material/Translate'
 import StorageIcon from '@mui/icons-material/Storage'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
+import CloudDoneIcon from '@mui/icons-material/CloudDone'
 import type { ReactElement } from 'react'
 import { useProjectStore, useUIStore } from '@app/store'
+
+/** 将时间戳转为相对时间文案：刚刚 / X 秒前 / X 分钟前 / X 小时前 */
+function formatRelativeTime(ts: number | null, now: number): string {
+  if (ts == null) return '尚未保存'
+  const diff = Math.max(0, now - ts)
+  if (diff < 5_000) return '刚刚'
+  if (diff < 60_000) return `${Math.floor(diff / 1000)} 秒前`
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  return `${Math.floor(diff / 3_600_000)} 小时前`
+}
 
 export function BottomStatusBar(): ReactElement {
   const theme = useTheme()
@@ -23,6 +34,18 @@ export function BottomStatusBar(): ReactElement {
     : -1
   const total = segments.length
   const percent = total > 0 ? Math.round((translated / total) * 100) : 0
+
+  const lastSavedAt = useProjectStore((s) => s.lastSavedAt)
+  // 每 10 秒触发一次重渲染，刷新"X 分钟前"等相对时间显示
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const t = window.setInterval(() => setTick((n) => n + 1), 10_000)
+    return () => window.clearInterval(t)
+  }, [])
+  const savedText = useMemo(
+    () => formatRelativeTime(lastSavedAt, Date.now()),
+    [lastSavedAt, /* tick 依赖通过 setTick 触发重渲染 */],
+  )
 
   const [gotoOpen, setGotoOpen] = useState(false)
   const [gotoValue, setGotoValue] = useState('')
@@ -120,9 +143,18 @@ export function BottomStatusBar(): ReactElement {
         <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
           <StorageIcon fontSize="small" color="action" />
           <Typography variant="caption" color="text.secondary">
-            本地 IndexedDB · WebDAV 预留
+            本地 IndexedDB · WebDAV 云同步
           </Typography>
         </Stack>
+
+        <Tooltip title={lastSavedAt != null ? new Date(lastSavedAt).toLocaleString('zh-CN') : '尚未保存'} arrow>
+          <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+            <CloudDoneIcon fontSize="small" color={lastSavedAt != null ? 'success' : 'disabled'} />
+            <Typography variant="caption" color={lastSavedAt != null ? 'text.secondary' : 'text.disabled'}>
+              {lastSavedAt != null ? `已保存 · ${savedText}` : '尚未保存'}
+            </Typography>
+          </Stack>
+        </Tooltip>
 
         <div style={{ flex: 1 }} />
 

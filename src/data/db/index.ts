@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie'
-import type { Project, File, Folder, Segment, TMEntry, TBEntry, MTProviderConfig, QAIssue, SavedLayout } from '@/types'
+import type { Project, File, Folder, Segment, TMEntry, TeamTMEntry, TBEntry, MTProviderConfig, QAIssue, SavedLayout } from '@/types'
 
 /** 本地自动快照：fflate 压缩后的完整 bundle（滚动 N 份，分钟级快照） */
 export interface BackupSnapshot {
@@ -32,6 +32,7 @@ export class CATDatabase extends Dexie {
   folders!: Table<Folder, number>
   segments!: Table<Segment, number>
   tmEntries!: Table<TMEntry, number>
+  teamTMEntries!: Table<TeamTMEntry, number>
   tbEntries!: Table<TBEntry, number>
   mtProviders!: Table<MTProviderConfig, string>
   qaIssues!: Table<QAIssue, number>
@@ -80,6 +81,43 @@ export class CATDatabase extends Dexie {
     //     无新增索引（rawBlob 不用于查询），Dexie 自动存储对象所有属性
     this.version(6).stores({
       files: '++id, projectId, folderId, name, format, position, createdAt, updatedAt',
+    })
+    // v7: 新增 teamTMEntries 表（团队译文记忆库，独立于本地 tmEntries）
+    //     唯一索引 &[source+sourceLang+targetLang+createdBy]：同一译员同一原文只保留一条，后面覆盖前面
+    this.version(7).stores({
+      teamTMEntries: '++id, &[source+sourceLang+targetLang+createdBy], sourceLang, targetLang, createdBy, createdAt, updatedAt',
+    })
+    // v8: tmEntries 去重第一步 —— 先建「非唯一」复合索引 [source+sourceLang+targetLang+projectId]
+    //     （不能直接建唯一索引 &，因为存量数据中"同原文不同译文"会违反唯一约束导致 createIndex 失败）
+    //     upgrade 函数负责删除重复项，只保留每组 updatedAt 最新的一条
+    this.version(8).stores({
+      tmEntries: '++id, [source+sourceLang+targetLang+projectId], sourceLang, targetLang, projectId, createdAt, updatedAt',
+    }).upgrade(async (tx) => {
+      try {
+        const all = await tx.table('tmEntries').toArray() as TMEntry[]
+        if (all.length === 0) return
+        const groups = new Map<string, TMEntry[]>()
+        for (const e of all) {
+          const k = `${e.source}\u0001${e.sourceLang}\u0001${e.targetLang}\u0001${e.projectId ?? '__GLOBAL__'}`
+          if (!groups.has(k)) groups.set(k, [])
+          groups.get(k)!.push(e)
+        }
+        const idsToDelete: number[] = []
+        for (const list of groups.values()) {
+          if (list.length <= 1) continue
+          list.sort((a, b) => b.updatedAt - a.updatedAt)
+          for (let i = 1; i < list.length; i++) {
+            if (list[i].id != null) idsToDelete.push(list[i].id as number)
+          }
+        }
+        if (idsToDelete.length > 0) await tx.table('tmEntries').bulkDelete(idsToDelete)
+      } catch (e) {
+        console.warn('[db v8 upgrade] dedup skipped:', e)
+      }
+    })
+    // v9: tmEntries 去重第二步 —— 存量重复项已在 v8 upgrade 中清理，现在可以安全地加上唯一约束 &
+    this.version(9).stores({
+      tmEntries: '++id, &[source+sourceLang+targetLang+projectId], sourceLang, targetLang, projectId, createdAt, updatedAt',
     })
   }
 }

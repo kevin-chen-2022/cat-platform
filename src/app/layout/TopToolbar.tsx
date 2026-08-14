@@ -25,6 +25,7 @@ import {
   RadioGroup,
   Alert,
   CircularProgress,
+  Avatar,
 } from '@mui/material'
 import TranslateIcon from '@mui/icons-material/Translate'
 import DarkModeIcon from '@mui/icons-material/DarkMode'
@@ -56,8 +57,15 @@ import MenuItemDownloadIcon from '@mui/icons-material/VerticalAlignBottom'
 import EditIcon from '@mui/icons-material/Edit'
 import ExportSettingsIcon from '@mui/icons-material/SettingsBackupRestoreOutlined'
 import ImportSettingsIcon from '@mui/icons-material/SystemUpdateAlt'
+import GroupsIcon from '@mui/icons-material/Groups'
+import StopCircleIcon from '@mui/icons-material/StopCircle'
+import PlayCircleIcon from '@mui/icons-material/PlayCircle'
+import TuneIcon from '@mui/icons-material/Tune'
+import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord'
+import SwapHorizIcon from '@mui/icons-material/SwapCalls'
+import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import type { ReactElement } from 'react'
-import { useUIStore, useProjectStore, useLayoutStore, useTermStore, useTMStore } from '@app/store'
+import { useUIStore, useProjectStore, useLayoutStore, useTermStore, useTMStore, useCollabStore } from '@app/store'
 import { showTabInDock, hideTabInDock } from './DockLayout'
 import { PANEL_REGISTRY } from './panelRegistry'
 import { LOCKED_TAB_IDS } from '@app/store/layout'
@@ -69,6 +77,7 @@ import { ImportProjectDialog } from '@/features/project/components/ImportProject
 import { ExportProjectDialog } from '@/features/project/components/ExportProjectDialog'
 import { DeleteProjectDialog } from '@/features/project/components/DeleteProjectDialog'
 import { AboutDialog } from './AboutDialog'
+import { SettingsDialog } from './SettingsDialog'
 import {
   type RecentProjectEntry, getRecentProjects, removeRecentProject,
   parsePairFile, exportPairFile, SETTINGS_KEYS, getSetting, setSetting,
@@ -77,6 +86,7 @@ import {
   downloadUserSettings, importUserSettings, readJSONFile,
   type CATUserSettingsBundle, type ImportUserSettingsStats,
 } from '@/services/io'
+import { startCollab, stopCollab } from '@/services/collab/goeasy'
 import type { LanguageCode, ID } from '@/types'
 
 /* =========================
@@ -266,6 +276,14 @@ export function TopToolbar(): ReactElement {
   const toggleZenMode = useLayoutStore((s) => s.toggleZenMode)
   const workbenchMode = useLayoutStore((s) => s.workbenchMode)
 
+  // 协同翻译 store
+  const collabConnectionStatus = useCollabStore((s) => s.connectionStatus)
+  const collabCurrentChannel = useCollabStore((s) => s.currentChannel)
+  const collabUsers = useCollabStore((s) => s.users)
+  const collabMyUserId = useCollabStore((s) => s.myUserId)
+  const collabSetEditingSegment = useCollabStore((s) => s.setEditingSegment)
+  const collabConfig = useCollabStore((s) => s.config)
+
   // 退出工作状态：TopToolbar 控制应用级 welcome 模式（workbenchMode='idle'）
   const [idleMode, setIdleMode] = useState(false)
 
@@ -277,6 +295,8 @@ export function TopToolbar(): ReactElement {
   const [viewAnchor, setViewAnchor] = useState<null | HTMLElement>(null)
   const [layoutAnchor, setLayoutAnchor] = useState<null | HTMLElement>(null)
   const [toolsAnchor, setToolsAnchor] = useState<null | HTMLElement>(null)
+  const [collabAnchor, setCollabAnchor] = useState<null | HTMLElement>(null)
+  const [collabPresenceAnchor, setCollabPresenceAnchor] = useState<null | HTMLElement>(null)
 
   const [saveLayoutOpen, setSaveLayoutOpen] = useState(false)
   const [layoutName, setLayoutName] = useState('')
@@ -316,6 +336,14 @@ export function TopToolbar(): ReactElement {
 
   // 关于弹窗
   const [aboutOpen, setAboutOpen] = useState(false)
+  // 设置弹窗（全屏）
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>(undefined)
+  // 打开设置弹窗，可指定初始展开的一级分类（如 'collab' / 'cloud' / 'basic'）
+  const openSettings = (section?: string) => {
+    setSettingsInitialSection(section)
+    setSettingsOpen(true)
+  }
 
   const currentProject = projects.find((p) => p.id === currentProjectId) ?? null
 
@@ -325,7 +353,19 @@ export function TopToolbar(): ReactElement {
     if (projectMenuAnchor) void loadRecent()
   }, [projectMenuAnchor, loadRecent])
 
+  // 来自设置卡片「立即使用并启动协同」按钮的事件：保证设置里改过的 manualChannel 先被 flush 后,再走和工具栏按钮完全一致的连接/断开逻辑
+  const toggleCollabRef = useRef<() => Promise<void>>(async () => {})
+  useEffect(() => {
+    const onStartRequested = () => { void toggleCollabRef.current() }
+    window.addEventListener('cat:collab:start-requested', onStartRequested)
+    return () => window.removeEventListener('cat:collab:start-requested', onStartRequested)
+  }, [])
+
   const closeAllMenus = () => {
+    // 先清除焦点，避免菜单 aria-hidden 时 descendant 仍持有 focus 的告警
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur()
+    }
     setProjectMenuAnchor(null)
     setFileMenuAnchor(null)
     setProjectSelAnchor(null)
@@ -335,6 +375,8 @@ export function TopToolbar(): ReactElement {
     setToolsAnchor(null)
     setTermFormatAnchor(null)
     setTmFormatAnchor(null)
+    setCollabAnchor(null)
+    setCollabPresenceAnchor(null)
   }
 
   /* ===== 项目菜单 动作 ===== */
@@ -433,6 +475,67 @@ export function TopToolbar(): ReactElement {
       /* ignore */
     }
     window.location.reload()
+  }
+
+  /* ===== 协同翻译 动作 ===== */
+  const [collabStarting, setCollabStarting] = useState(false)
+  const isCollabConnected = collabConnectionStatus === 'connected' || collabConnectionStatus === 'connecting'
+  const collabVisible = visibleTabs.includes('collab')
+  const actToggleCollab = async () => {
+    if (isCollabConnected) {
+      closeAllMenus()
+      if (!window.confirm('确认离开协同频道？将停止接收同步消息并关闭协同面板。')) return
+      await stopCollab()
+      if (collabVisible) hideTabInDock('collab')
+      collabSetEditingSegment(null)
+      notify('info', '已停止网络协同翻译')
+    } else {
+      closeAllMenus()
+      if (!currentProjectId) { notify('warning', '请先打开一个项目后再启动协同'); return }
+      if (!collabConfig.appkey.trim()) {
+        notify('warning', '未配置 GoEasy AppKey，请先在「设置 → 网络协同翻译」中填写')
+        openSettings('collab')
+        return
+      }
+      // 启动前先让当前焦点元素失焦(通常是设置界面的频道名输入框),保证它的 onBlur 把未保存的频道名 flush 到 collabStore.config
+      try {
+        const active = document.activeElement as HTMLElement | null
+        if (active && typeof active.blur === 'function') {
+          active.blur()
+        }
+      } catch { /* ignore */ }
+      // 等 blur 宏任务执行完毕(React setState + savePersist 都是同步,一个微任务 tick 就够)
+      await new Promise<void>((r) => queueMicrotask(() => r()))
+      setCollabStarting(true)
+      try {
+        const result = await startCollab({
+          projectId: currentProjectId,
+          projectName: currentProject?.name,
+        })
+        if (result.ok) {
+          notify('success', `已加入协同频道：${result.channel}`)
+          if (!collabVisible) showTabInDock('collab')
+        } else {
+          notify('error', `启动协同失败：${result.error ?? '未知原因'}`)
+        }
+      } catch (e) {
+        notify('error', `启动协同异常：${(e as Error).message}`)
+      } finally {
+        setCollabStarting(false)
+      }
+    }
+  }
+  // 把最新版 actToggleCollab 暴露给 ref,供设置卡片通过 window 事件调用(保证走完全相同的校验/启动链路)
+  toggleCollabRef.current = actToggleCollab
+  const actCopyCollabChannel = () => {
+    closeAllMenus()
+    if (!collabCurrentChannel) return
+    try {
+      void navigator.clipboard?.writeText(collabCurrentChannel)
+      notify('success', `频道名已复制：${collabCurrentChannel}`)
+    } catch {
+      notify('warning', '复制失败，请手动选择')
+    }
   }
 
   /* ===== 文件菜单 动作 ===== */
@@ -755,10 +858,163 @@ export function TopToolbar(): ReactElement {
         <TermTmExportFormatMenu kind="term" anchor={termFormatAnchor} onClose={() => setTermFormatAnchor(null)} />
         <TermTmExportFormatMenu kind="tm" anchor={tmFormatAnchor} onClose={() => setTmFormatAnchor(null)} />
 
+        {/* 一级菜单 3：协同翻译（文件菜单后 · 核心专业功能） */}
+        <Tooltip title={isCollabConnected ? `网络协同翻译：已连接 · ${collabUsers.length} 人在线` : '网络协同翻译：多人实时协作'}>
+          <span style={{ display: 'inline-flex' }}>
+            <Button
+              size="small"
+              variant="text"
+              color="inherit"
+              startIcon={<GroupsIcon fontSize="small" />}
+              onClick={(e) => setCollabAnchor(e.currentTarget)}
+              disabled={collabStarting}
+              sx={{ textTransform: 'none', fontWeight: 600, minWidth: 84, position: 'relative' }}
+            >
+              协同
+              {isCollabConnected && collabUsers.length > 0 && (
+                <Chip
+                  size="small"
+                  label={collabUsers.length}
+                  color="success"
+                  sx={{
+                    ml: 0.5,
+                    height: 16,
+                    '& .MuiChip-label': { px: 0.5, py: 0 },
+                    fontSize: 'calc(var(--app-content-font-size) * 0.72)',
+                  }}
+                />
+              )}
+            </Button>
+          </span>
+        </Tooltip>
+        <Menu anchorEl={collabAnchor} open={Boolean(collabAnchor)} onClose={() => setCollabAnchor(null)}>
+          <MenuItem onClick={actToggleCollab} disabled={collabStarting}>
+            <ListItemIcon>
+              {isCollabConnected ? (
+                <>
+                  <StopCircleIcon fontSize="small" color="error" />
+                </>
+              ) : (
+                <PlayCircleIcon fontSize="small" color="success" />
+              )}
+            </ListItemIcon>
+            <ListItemText
+              primary={isCollabConnected
+                ? `停止协同翻译 (已连接 ${collabUsers.length} 人)`
+                : '启动网络协同翻译'
+              }
+              secondary={isCollabConnected
+                ? `频道 ${collabCurrentChannel ?? '—'}`
+                : (collabCurrentChannel ? `加入频道 ${collabCurrentChannel}` : (currentProject ? '加入当前项目频道' : '需先打开项目'))
+              }
+            />
+            <FiberManualRecordIcon
+              sx={{
+                fontSize: 10,
+                color:
+                  collabConnectionStatus === 'connected' ? 'success.main'
+                    : collabConnectionStatus === 'connecting' ? 'warning.main'
+                      : collabConnectionStatus === 'failed' ? 'error.main'
+                        : 'text.disabled',
+                mr: 0.5,
+              }}
+              fontSize="inherit"
+            />
+          </MenuItem>
+          <Divider />
+          <MenuItem
+            disabled={!isCollabConnected || collabUsers.length === 0}
+            onClick={(e) => { setCollabPresenceAnchor(e.currentTarget) }}
+            onMouseEnter={(e) => isCollabConnected && collabUsers.length > 0 && setCollabPresenceAnchor(e.currentTarget)}
+          >
+            <ListItemIcon><GroupsIcon fontSize="small" /></ListItemIcon>
+            <ListItemText primary={`在线译员 (${collabUsers.length})`} secondary="悬停查看列表" />
+          </MenuItem>
+          <Menu
+            anchorEl={collabPresenceAnchor}
+            open={Boolean(collabPresenceAnchor)}
+            onClose={() => setCollabPresenceAnchor(null)}
+            anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+            transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+            slotProps={{
+              paper: {
+                sx: {
+                  minWidth: 220,
+                  maxWidth: 300,
+                  // 在线译员过多时滚动,50 名译员场景下不会撑满屏幕
+                  maxHeight: 280,
+                  overflow: 'auto',
+                },
+              },
+            }}
+          >
+            {collabUsers.length === 0 && (
+              <MenuItem disabled>
+                <ListItemText secondary="暂无在线译员" />
+              </MenuItem>
+            )}
+            {collabUsers.map((u) => {
+              const isMe = u.userId === collabMyUserId
+              return (
+                <MenuItem key={u.userId} disabled dense>
+                  <ListItemIcon sx={{ minWidth: 32 }}>
+                    <Avatar
+                      sx={{
+                        width: 24,
+                        height: 24,
+                        fontSize: 'calc(var(--app-content-font-size) * 0.82)',
+                        fontWeight: 700,
+                      }}
+                    >
+                      {u.nickname ? u.nickname.trim().charAt(0).toUpperCase() : 'U'}
+                    </Avatar>
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                        <Typography variant="body2" sx={{ fontWeight: isMe ? 700 : 500 }}>
+                          {u.nickname || '译员'}
+                        </Typography>
+                        {isMe && (
+                          <Chip size="small" label="我" sx={{ height: 14, '& .MuiChip-label': { px: 0.5 } }} />
+                        )}
+                      </Box>
+                    }
+                    secondary={u.editingSegmentId != null ? `编辑段 #${String(u.editingSegmentId)}` : undefined}
+                  />
+                </MenuItem>
+              )
+            })}
+          </Menu>
+          <MenuItem onClick={actCopyCollabChannel} disabled={!collabCurrentChannel}>
+            <ListItemIcon><ContentCopyIcon fontSize="small" /></ListItemIcon>
+            <ListItemText primary="复制频道名" secondary={collabCurrentChannel ?? '尚未加入频道'} />
+          </MenuItem>
+          <MenuItem disabled>
+            <ListItemIcon><SwapHorizIcon fontSize="small" /></ListItemIcon>
+            <ListItemText primary="切换频道…" secondary="(预留)" />
+          </MenuItem>
+          <Divider />
+          <MenuItem onClick={() => { setCollabAnchor(null); openSettings('collab') }}>
+            <ListItemIcon><TuneIcon fontSize="small" /></ListItemIcon>
+            <ListItemText
+              primary="网络协同配置信息"
+              secondary="打开设置 → 网络协同翻译"
+            />
+          </MenuItem>
+        </Menu>
+
         <Tooltip title="视图菜单：控制 Tab 显隐与布局">
-          <IconButton size="small" onClick={(e) => setViewAnchor(e.currentTarget)} aria-label="View menu">
-            <ViewIcon />
-          </IconButton>
+          <Button
+            size="small"
+            variant="text"
+            color="inherit"
+            startIcon={<ViewIcon fontSize="small" />}
+            onClick={(e) => setViewAnchor(e.currentTarget)}
+            sx={{ textTransform: 'none', fontWeight: 600, minWidth: 'auto' }}
+          >
+            视图
+          </Button>
         </Tooltip>
         <Menu
           anchorEl={viewAnchor}
@@ -859,19 +1115,30 @@ export function TopToolbar(): ReactElement {
           })}
         </Menu>
 
-        <Tooltip title="工具 / 设置 / 关于">
-          <IconButton size="small" onClick={(e) => setToolsAnchor(e.currentTarget)}>
-            <SettingsIcon />
-          </IconButton>
+        <Tooltip title="维护：云端同步 / 重启 / 设置 / 关于">
+          <Button
+            size="small"
+            variant="text"
+            color="inherit"
+            startIcon={<SettingsIcon fontSize="small" />}
+            onClick={(e) => setToolsAnchor(e.currentTarget)}
+            sx={{ textTransform: 'none', fontWeight: 600, minWidth: 'auto' }}
+          >
+            维护
+          </Button>
         </Tooltip>
         <Menu anchorEl={toolsAnchor} open={Boolean(toolsAnchor)} onClose={() => setToolsAnchor(null)}>
-          <MenuItem onClick={() => { setToolsAnchor(null); notify('info', 'WebDAV 同步功能预留，稍后开放') }}>
+          <MenuItem onClick={() => { setToolsAnchor(null); openSettings('cloud') }}>
             <ListItemIcon><CloudSyncIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>WebDAV 同步 (预留)</ListItemText>
+            <ListItemText>云端同步（WebDAV）</ListItemText>
           </MenuItem>
           <MenuItem onClick={actRestartWorkbench}>
             <ListItemIcon><RestartIcon fontSize="small" /></ListItemIcon>
             <ListItemText>重启工作台</ListItemText>
+          </MenuItem>
+          <MenuItem onClick={() => { setToolsAnchor(null); openSettings('basic') }}>
+            <ListItemIcon><SettingsIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>设置</ListItemText>
           </MenuItem>
           <MenuItem onClick={() => { setToolsAnchor(null); setAboutOpen(true) }}>
             <ListItemIcon><InfoIcon fontSize="small" /></ListItemIcon>
@@ -1083,6 +1350,8 @@ export function TopToolbar(): ReactElement {
       />
       {/* 关于弹窗 */}
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      {/* 设置弹窗（全屏） */}
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} initialSection={settingsInitialSection} />
     </AppBar>
   )
 }

@@ -1,4 +1,5 @@
-import type { TMEntry, MatchResult, LanguageCode, ID } from '@/types'
+import type { TMEntry, TeamTMEntry, MatchResult, LanguageCode, ID } from '@/types'
+import { db } from '@data/db'
 
 export function levenshtein(a: string, b: string): number {
   if (a === b) return 0
@@ -57,4 +58,51 @@ export function searchMemory(
     }
   }
   return matches.sort((a, b) => b.score - a.score).slice(0, limit)
+}
+
+/**
+ * 按源文本精确查询团队译文记忆库条目（100% 匹配 + 语言对匹配）
+ * 返回同一原文下的所有译员译文版本（按更新时间倒序），供「团队译文卡片」显示
+ */
+export async function findTMBySourceExact(
+  source: string,
+  sourceLang: LanguageCode,
+  targetLang: LanguageCode,
+): Promise<TeamTMEntry[]> {
+  const trimmed = source.trim()
+  if (!trimmed) return []
+  try {
+    const byLang: TeamTMEntry[] = await db.teamTMEntries.where('sourceLang').equals(sourceLang).toArray()
+    const rows = byLang.filter(
+      (e) =>
+        e.targetLang === targetLang &&
+        e.source.trim() === trimmed,
+    )
+    // 按 updatedAt 倒序：优先显示最新分享的译文
+    return rows.sort((a, b) => b.updatedAt - a.updatedAt)
+  } catch (err) {
+    console.warn('[tm/engine] findTMBySourceExact failed:', err)
+    return []
+  }
+}
+
+/**
+ * 查询团队译文记忆库中所有匹配指定语言对的条目（供「团队译文自动填充未译段」使用）
+ */
+export async function loadTeamTMEntries(
+  sourceLang: LanguageCode,
+  targetLang: LanguageCode,
+): Promise<TeamTMEntry[]> {
+  try {
+    const byLang: TeamTMEntry[] = await db.teamTMEntries.where('sourceLang').equals(sourceLang).toArray()
+    return byLang.filter((e) => e.targetLang === targetLang)
+  } catch (err) {
+    console.warn('[tm/engine] loadTeamTMEntries failed:', err)
+    return []
+  }
+}
+
+/** 清空团队译文记忆库 */
+export async function clearTeamTMEntries(): Promise<void> {
+  await db.teamTMEntries.clear()
 }

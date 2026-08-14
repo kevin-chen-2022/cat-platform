@@ -4,6 +4,7 @@ import { db } from '@data/db'
 import { parseFile, detectFormat } from '@/services/io/parsers/dispatcher'
 import { parseTxt } from '@/services/io/parsers/txt'
 import type { ParseResult } from '@/services/io/parsers/types'
+import { useCollabStore } from './collab'
 
 export interface ImportProgress {
   stage: 'idle' | 'parsing' | 'saving' | 'done' | 'error'
@@ -26,6 +27,8 @@ interface ProjectState {
   /** db.settings 中 project.defaultSourceLang/defaultTargetLang 的本地缓存（加载时填充） */
   defaultSourceLang: string
   defaultTargetLang: string
+  /** 最近一次翻译保存时间戳（ms），用于底部状态栏显示"已保存"提示 */
+  lastSavedAt: number | null
 
   loadProjects: () => Promise<void>
   selectProject: (id: ID | null) => Promise<void>
@@ -211,6 +214,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   importProgress: { stage: 'idle', message: '' },
   defaultSourceLang: 'en',
   defaultTargetLang: 'zh-CN',
+  lastSavedAt: null,
 
   loadProjects: async () => {
     const [rows, sl, tl] = await Promise.all([
@@ -753,6 +757,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       segments: s.segments.map((seg) =>
         seg.id === id ? { ...seg, ...patch, updatedAt: now } : seg,
       ),
+      lastSavedAt: now,
     }))
     // 再异步写入 IndexedDB（失败时仅记日志，不影响内存状态）
     try {
@@ -772,17 +777,38 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const file = s.files.find((f) => f.id === seg.fileId)
       const sl = project?.sourceLang ?? 'en'
       const tl = project?.targetLang ?? 'zh-CN'
-      // 先查复合唯一索引是否存在
+
+      // 当前"自己"的身份,用于 meta 写入(以便团队译文卡片排除自己的条目)
+      const collab = useCollabStore.getState()
+      const myNick = collab.config.nickname?.trim() || undefined
+      const myUid = collab.myUserId || undefined
+      const selfMeta =
+        myNick || myUid
+          ? { ...(file?.name ? { sourceFile: file.name } : {}), ...(myNick ? { createdBy: myNick } : {}), ...(myUid ? { createdByUserId: myUid } : {}) }
+          : file?.name
+            ? { sourceFile: file.name }
+            : undefined
+
+      // 按 v8 新复合键 [source+sourceLang+targetLang+projectId] 查询，同原文只存最新一份
+      const projectIdForTM = s.currentProjectId ?? undefined
       const existing = await db.tmEntries
-        .where('[source+target+sourceLang+targetLang]')
-        .equals([src, tgt, sl, tl])
+        .where('[source+sourceLang+targetLang+projectId]')
+        .equals([src, sl, tl, projectIdForTM] as any)
         .first()
       if (existing) {
-        // 存在则刷新 updatedAt / meta / projectId 等
+        // 存在则覆盖 target（实现"修改译文时旧译文被覆盖"） + 刷新 usage/meta/projectId
+        // 保留已有 meta.createdBy* 优先级更高，避免"采纳别人的译文后把作者改成我"
+        const mergedMeta = {
+          ...(selfMeta ?? {}),
+          ...(existing.meta ?? {}),
+          ...(existing.meta?.createdBy ? { createdBy: existing.meta.createdBy } : {}),
+          ...(existing.meta?.createdByUserId ? { createdByUserId: existing.meta.createdByUserId } : {}),
+        }
         await db.tmEntries.update(existing.id as number, {
+          target: tgt,
           updatedAt: now,
-          meta: file?.name ? { sourceFile: file.name } : existing.meta,
-          projectId: existing.projectId ?? s.currentProjectId ?? undefined,
+          meta: Object.keys(mergedMeta).length > 0 ? (mergedMeta as any) : existing.meta,
+          projectId: existing.projectId ?? projectIdForTM,
           usageCount: (existing.usageCount ?? 0) + 1,
           lastUsedAt: now,
         })
@@ -793,8 +819,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           target: tgt,
           sourceLang: sl,
           targetLang: tl,
-          projectId: s.currentProjectId ?? undefined,
-          meta: file?.name ? { sourceFile: file.name } : undefined,
+          projectId: projectIdForTM,
+          meta: selfMeta as any,
           createdAt: (seg as any).createdAt ?? now,
           updatedAt: now,
           usageCount: 1,
@@ -850,7 +876,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         ...reindexed,
       ],
     }))
-    // 自动写入翻译记忆
+    // 自动写入翻译记忆(含自己身份信息,便于团队译文排除)
     try {
       const src = mergedSource.trim()
       const tgt = mergedTarget.trim()
@@ -858,18 +884,41 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         const project = s.projects.find((p) => p.id === s.currentProjectId)
         const sl = project?.sourceLang ?? 'en'
         const tl = project?.targetLang ?? 'zh-CN'
+        const collab = useCollabStore.getState()
+        const myNick = collab.config.nickname?.trim() || undefined
+        const myUid = collab.myUserId || undefined
+        const selfMeta =
+          myNick || myUid
+            ? {
+                ...(myNick ? { createdBy: myNick } : {}),
+                ...(myUid ? { createdByUserId: myUid } : {}),
+              }
+            : undefined
+        // 按 v8 新复合键 [source+sourceLang+targetLang+projectId] 查询，覆盖 target
+        const projectIdForTM = s.currentProjectId ?? undefined
         const existing = await db.tmEntries
-          .where('[source+target+sourceLang+targetLang]')
-          .equals([src, tgt, sl, tl])
+          .where('[source+sourceLang+targetLang+projectId]')
+          .equals([src, sl, tl, projectIdForTM] as any)
           .first()
         if (existing) {
+          const mergedMeta = {
+            ...(selfMeta ?? {}),
+            ...(existing.meta ?? {}),
+            ...(existing.meta?.createdBy ? { createdBy: existing.meta.createdBy } : {}),
+            ...(existing.meta?.createdByUserId ? { createdByUserId: existing.meta.createdByUserId } : {}),
+          }
           await db.tmEntries.update(existing.id as number, {
-            updatedAt: now, usageCount: (existing.usageCount ?? 0) + 1, lastUsedAt: now,
+            target: tgt,
+            updatedAt: now,
+            usageCount: (existing.usageCount ?? 0) + 1,
+            lastUsedAt: now,
+            meta: Object.keys(mergedMeta).length > 0 ? (mergedMeta as any) : existing.meta,
           })
         } else {
           await db.tmEntries.add({
             source: src, target: tgt, sourceLang: sl, targetLang: tl,
-            projectId: s.currentProjectId ?? undefined,
+            projectId: projectIdForTM,
+            meta: selfMeta as any,
             createdAt: now, updatedAt: now, usageCount: 1, lastUsedAt: now,
           })
         }

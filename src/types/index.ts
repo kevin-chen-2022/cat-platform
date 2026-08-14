@@ -84,11 +84,29 @@ export interface TMEntry {
   projectId?: ID
   meta?: {
     sourceFile?: string
+    /** 译员昵称(团队译文卡片显示),可为空(导入历史数据时为空) */
     createdBy?: string
+    /** 译员 userId(团队译文卡片用来排除"自己的译文",仅协同译员会写入) */
+    createdByUserId?: string
     domain?: string
   }
   usageCount?: number
   lastUsedAt?: number
+  createdAt: number
+  updatedAt: number
+}
+
+/** 团队译文记忆库条目（独立于本地 TM，专用于协同翻译中其他译员分享的译文） */
+export interface TeamTMEntry {
+  id?: ID
+  source: string
+  target: string
+  sourceLang: LanguageCode
+  targetLang: LanguageCode
+  /** 译员昵称（顶级字段，用于复合唯一索引 & 排除自己的译文） */
+  createdBy: string
+  /** 译员 userId（用于排除自己的译文） */
+  createdByUserId: string
   createdAt: number
   updatedAt: number
 }

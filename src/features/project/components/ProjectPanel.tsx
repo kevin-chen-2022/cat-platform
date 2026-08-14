@@ -38,13 +38,15 @@ import FileDownloadIcon from '@mui/icons-material/FileDownload'
 import ContentPasteIcon from '@mui/icons-material/ContentPaste'
 import AddIcon from '@mui/icons-material/Add'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined'
+import FileCopyIcon from '@mui/icons-material/FileCopy'
 import SelectAllIcon from '@mui/icons-material/SelectAll'
 import BookmarkIcon from '@mui/icons-material/Bookmark'
 import MemoryIcon from '@mui/icons-material/Memory'
 import type { ReactElement, DragEvent, MouseEvent } from 'react'
 import { useProjectStore, useUIStore, useLayoutStore, useTermStore, useTMStore } from '@app/store'
 import { sortByPositionThenName } from '@app/store/project'
-import type { Folder, ID } from '@/types'
+import type { Folder, File as ProjectFile, ID, Segment } from '@/types'
+import { db } from '@data/db'
 import { ImportFileDialog } from '@/features/project/components/ImportFileDialog'
 import { CreateProjectDialog } from '@/features/project/components/CreateProjectDialog'
 
@@ -831,6 +833,78 @@ export function ProjectPanel(): ReactElement {
     return filtered
   }, [selectedFolderIds, descendantFilesOfFolder, folders, selectedFileIds])
   const hasSelection = fileIdsToDelete.length > 0 || folderIdsToDelete.length > 0
+  const hasFileSelection = fileIdsToDelete.length > 0
+
+  // -------- 复制选中文件为副本（在原文件后面插入，命名：原名-副本N） --------
+  const handleDuplicateFiles = useCallback(async () => {
+    const ids = Array.from(selectedFileIds)
+    if (ids.length === 0) {
+      notify('warning', '请先勾选需要复制的文件')
+      return
+    }
+    if (currentProjectId == null) {
+      notify('warning', '请先选择项目')
+      return
+    }
+    let duplicated = 0
+    try {
+      for (const fid of ids) {
+        const src = files.find((f) => f.id === fid)
+        if (!src || !src.id) continue
+        // 查找该文件同 folder 下的所有同名文件（含扩展名），计算下一个"副本N"序号
+        const siblings = files.filter(
+          (x) => (x.folderId ?? null) === (src.folderId ?? null) && x.projectId === currentProjectId,
+        )
+        // 拆分「主名 + 扩展名」
+        const dotIdx = src.name.lastIndexOf('.')
+        const base = dotIdx > 0 ? src.name.slice(0, dotIdx) : src.name
+        const ext = dotIdx > 0 ? src.name.slice(dotIdx) : ''
+        // 匹配「原名-副本数字.ext」模式，找最大 N
+        let maxN = 0
+        const suffixRegex = new RegExp(
+          `^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-副本(\\d+)${ext.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
+        )
+        for (const sib of siblings) {
+          const m = sib.name.match(suffixRegex)
+          if (m) {
+            const n = parseInt(m[1], 10)
+            if (!Number.isNaN(n) && n > maxN) maxN = n
+          }
+        }
+        const nextName = `${base}-副本${maxN + 1}${ext}`
+        // 1. 创建新文件
+        const newFileId = await addFile({
+          projectId: currentProjectId,
+          folderId: src.folderId ?? null,
+          name: nextName,
+          format: src.format,
+          ...(src.rawBlob != null ? { rawBlob: src.rawBlob } : {}),
+        })
+        // 2. 复制所有 segments —— 只复制原文，清空译文/备注，状态重置为未翻译
+        const srcSegs = await db.segments.where({ fileId: src.id as number }).toArray()
+        if (srcSegs.length > 0) {
+          const now = Date.now()
+          const newSegs: Segment[] = srcSegs
+            .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+            .map((s, idx) => ({
+              fileId: newFileId,
+              index: idx,
+              source: s.source,
+              target: '',
+              status: 'untranslated',
+              notes: undefined,
+              createdAt: now,
+              updatedAt: now,
+            } as Segment))
+          await db.segments.bulkAdd(newSegs)
+        }
+        duplicated++
+      }
+      notify('success', `复制完成：新增 ${duplicated} 个文件副本`)
+    } catch (err) {
+      notify('error', `复制文件失败：${(err as Error).message}`)
+    }
+  }, [selectedFileIds, currentProjectId, files, addFile, notify])
 
   // -------- 删除选中 --------
   const handleDeleteSelected = useCallback(async () => {
@@ -1482,6 +1556,19 @@ export function ProjectPanel(): ReactElement {
                   onClick={toggleSelectAll}
                 >
                   全选
+                </Button>
+              </span>
+            </Tooltip>
+            <Tooltip title={hasFileSelection ? '复制原文为副本（原名-副本N命名）' : '请先勾选需要复制的文件'}>
+              <span>
+                <Button
+                  size="small"
+                  disabled={!hasFileSelection}
+                  startIcon={<FileCopyIcon fontSize="small" />}
+                  onClick={() => { void handleDuplicateFiles() }}
+                >
+                  复制为副本
+                  {fileIdsToDelete.length > 0 ? `（${fileIdsToDelete.length}）` : ''}
                 </Button>
               </span>
             </Tooltip>

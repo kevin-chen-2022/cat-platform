@@ -77,3 +77,11 @@ export type {
   WebdavConfig,
   ConnectionStatus,
 } from './sync'
+export {
+  useCollabStore,
+} from './collab'
+export type {
+  CollabConfig,
+  CollabConnectionStatus,
+  CollabState,
+} from './collab'

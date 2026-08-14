@@ -6,33 +6,17 @@ import {
   DialogContent,
   DialogTitle,
   TextField,
-  Autocomplete,
   Box,
-  Typography,
-  MenuItem,
+  Stack,
+  Tooltip,
+  IconButton,
   Switch,
   FormControlLabel,
 } from '@mui/material'
+import SwapHorizIcon from '@mui/icons-material/SwapHoriz'
 import type { ReactElement } from 'react'
 import { useProjectStore, useUIStore } from '@app/store'
-
-/** 常用语言列表（用于 Autocomplete，同时允许自由输入 BCP-47 代码） */
-const COMMON_LANGS: Array<{ code: string; label: string }> = [
-  { code: 'zh-CN', label: '中文（简体）' },
-  { code: 'zh-TW', label: '中文（繁体）' },
-  { code: 'en', label: '英语' },
-  { code: 'ja', label: '日语' },
-  { code: 'ko', label: '韩语' },
-  { code: 'fr', label: '法语' },
-  { code: 'de', label: '德语' },
-  { code: 'es', label: '西班牙语' },
-  { code: 'ru', label: '俄语' },
-  { code: 'pt', label: '葡萄牙语' },
-  { code: 'it', label: '意大利语' },
-  { code: 'ar', label: '阿拉伯语' },
-  { code: 'th', label: '泰语' },
-  { code: 'vi', label: '越南语' },
-]
+import { LangAutocomplete } from '@/shared/components/LangAutocomplete'
 
 interface Props {
   open: boolean
@@ -115,56 +99,33 @@ export function CreateProjectDialog({ open, onClose }: Props): ReactElement | nu
             error={!!nameError}
             helperText={nameError}
           />
-          <Box sx={{ display: 'flex', gap: 2 }}>
-            <Autocomplete
-              freeSolo
-              options={COMMON_LANGS}
-              getOptionLabel={(opt) => typeof opt === 'string' ? opt : `${opt.code} — ${opt.label}`}
-              renderOption={(props, opt) => {
-                const { key, ...rest } = props as any
-                return (
-                  <MenuItem key={opt.code} {...rest}>
-                    <Typography variant="body2" component="span" sx={{ fontWeight: 600, minWidth: 64 }}>
-                      {opt.code}
-                    </Typography>
-                    <Typography variant="body2" component="span" color="text.secondary">
-                      {opt.label}
-                    </Typography>
-                  </MenuItem>
-                )
-              }}
+          <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+            <LangAutocomplete
+              label="源语言"
               value={sourceLang}
-              onInputChange={(_, v) => setSourceLang(v)}
-              renderInput={(params) => (
-                <TextField {...params} label="源语言" helperText="可输入或选择" size="small" />
-              )}
-              sx={{ flex: 1 }}
+              onChange={setSourceLang}
+              placeholder="en / zh-CN"
             />
-            <Autocomplete
-              freeSolo
-              options={COMMON_LANGS}
-              getOptionLabel={(opt) => typeof opt === 'string' ? opt : `${opt.code} — ${opt.label}`}
-              renderOption={(props, opt) => {
-                const { key, ...rest } = props as any
-                return (
-                  <MenuItem key={opt.code} {...rest}>
-                    <Typography variant="body2" component="span" sx={{ fontWeight: 600, minWidth: 64 }}>
-                      {opt.code}
-                    </Typography>
-                    <Typography variant="body2" component="span" color="text.secondary">
-                      {opt.label}
-                    </Typography>
-                  </MenuItem>
-                )
-              }}
+            <Tooltip title="交换源/目标语言">
+              <IconButton
+                size="small"
+                onClick={() => {
+                  const s = sourceLang
+                  setSourceLang(targetLang)
+                  setTargetLang(s)
+                }}
+                sx={{ p: 0.5 }}
+              >
+                <SwapHorizIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            <LangAutocomplete
+              label="目标语言"
               value={targetLang}
-              onInputChange={(_, v) => setTargetLang(v)}
-              renderInput={(params) => (
-                <TextField {...params} label="目标语言" helperText="可输入或选择" size="small" />
-              )}
-              sx={{ flex: 1 }}
+              onChange={setTargetLang}
+              placeholder="zh-CN / en"
             />
-          </Box>
+          </Stack>
           <TextField
             fullWidth
             multiline

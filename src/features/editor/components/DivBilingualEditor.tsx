@@ -5,7 +5,7 @@ import {
   Box, Typography, IconButton, Tooltip, Stack,
   TextField, Checkbox, FormControlLabel, ToggleButton, ToggleButtonGroup, InputAdornment,
   CircularProgress, Dialog, DialogTitle, DialogContent, DialogActions, Button,
-  Popover, Badge, Chip,
+  Popover, Badge, Chip, Avatar, Divider, Paper,
 } from '@mui/material'
 import { useProjectStore, useUIStore, useEditorContextStore, useTermStore, useLayoutStore, useDictionaryStore, useMachineTranslationStore, useAiQAStore, useLinkageFragmentSearchStore, useLatestTranslationsStore, dispatchSegmentActivated, dispatchSourceSelected, callAiChat } from '@app/store'
 import type { Term, AiProviderKey, AiProviderCfg } from '@app/store'
@@ -16,8 +16,20 @@ import { showTabInDock } from '@/app/layout/DockLayout'
 import { doInsertViaExecCommand } from '@/shared/utils/insertText'
 import { buildTermHint } from '@/shared/utils/termMatch'
 import { needsTranslation, htmlToPlainText } from '@/shared/utils/segmentFilter'
-import { searchMemory } from '@/services/tm/engine'
-import type { TMEntry, LanguageCode } from '@/types'
+import { searchMemory, findTMBySourceExact, loadTeamTMEntries } from '@/services/tm/engine'
+import type { TMEntry, TeamTMEntry, LanguageCode } from '@/types'
+// Co-editing (GoEasy)
+import { useCollabStore } from '@/app/store/collab'
+import {
+  publishSegmentLock,
+  publishSegmentUnlock,
+  publishTMEntry,
+  isRemoteWriteSuppressed,
+  publishPresenceRefresh,
+  stopCollab,
+  flushSegmentTMEntry,
+  type SegmentEntrySnapshot,
+} from '@/services/collab/goeasy'
 // Icons
 import ViewStreamIcon from '@mui/icons-material/ViewStream'
 import ViewColumnIcon from '@mui/icons-material/ViewColumn'
@@ -34,6 +46,7 @@ import FormatColorTextIcon from '@mui/icons-material/FormatColorText'
 import SuperscriptIcon from '@mui/icons-material/Superscript'
 import LabelIcon from '@mui/icons-material/Label'
 import StickyNote2Icon from '@mui/icons-material/StickyNote2'
+import LockIcon from '@mui/icons-material/Lock'
 import CenterFocusStrongIcon from '@mui/icons-material/CenterFocusStrong'
 import BookmarkAddIcon from '@mui/icons-material/BookmarkAdd'
 import UndoIcon from '@mui/icons-material/Undo'
@@ -64,6 +77,9 @@ import MemoryIcon from '@mui/icons-material/Memory'
 import SmartToyIcon from '@mui/icons-material/SmartToy'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import FormatSizeIcon from '@mui/icons-material/FormatSize'
+import GroupIcon from '@mui/icons-material/Group'
+import DownloadDoneIcon from '@mui/icons-material/DownloadDone'
+import PeopleAltIcon from '@mui/icons-material/PeopleAlt'
 
 // —— 常量 ——
 
@@ -118,6 +134,194 @@ const TEXT_COLORS = [
 function hasRichTextHtml(text: string | null | undefined): boolean {
   if (!text) return false
   return /<\/?(b|sup|sub|span|strong|i|u)\b[^>]*>/i.test(text)
+}
+
+// —— 团队译文卡片 ——
+// 在激活段下方展示所有译员分享的译文(100% 匹配源文本的 TM 条目)
+// 点击「采纳」即可填入自己的译文框,不会覆盖别人的译文
+
+function tmAvatarColor(seed: string): string {
+  const palette = [
+    '#ef5350', '#ec407a', '#ab47bc', '#7e57c2', '#5c6bc0',
+    '#42a5f5', '#26c6da', '#26a69a', '#66bb6a', '#9ccc65',
+    '#ffa726', '#8d6e63', '#78909c', '#29b6f6', '#558b2f',
+  ]
+  let h = 0
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
+  return palette[h % palette.length]
+}
+
+function tmFormatTime(ts: number): string {
+  const d = new Date(ts)
+  const now = new Date()
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  if (sameDay) return `${hh}:${mm}`
+  return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`
+}
+
+interface TeamTranslationCardsProps {
+  source: string
+  currentTarget: string
+  sourceLang: LanguageCode
+  targetLang: LanguageCode
+  disabled: boolean
+  onAdopt: (targetText: string) => void
+  /** 是否展开显示卡片列表(关闭时仍查询以通知 count) */
+  open: boolean
+  /** 查询到团队译文数量变化时回调,用于按钮变色 */
+  onCountChange?: (count: number) => void
+}
+
+function TeamTranslationCards(props: TeamTranslationCardsProps): ReactElement | null {
+  const { source, currentTarget, sourceLang, targetLang, disabled, onAdopt, open, onCountChange } = props
+  const [entries, setEntries] = useState<TeamTMEntry[]>([])
+  const [loading, setLoading] = useState(false)
+  const sourceKey = `${sourceLang}::${targetLang}::${source}`
+
+  // 订阅 collab logs:tm_sync 写入团队 TM 时一定会追加日志,用来触发 UI 刷新
+  const logsVersion = useCollabStore((s) => s.logs.length)
+  // 我的 userId,用于排除"自己"的译文(只显示其他译员版本)
+  const myUserId = useCollabStore((s) => s.myUserId)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!source.trim()) { setEntries([]); return }
+    setLoading(true)
+    void findTMBySourceExact(source, sourceLang, targetLang).then((rows) => {
+      if (cancelled) return
+      const cur = currentTarget.trim()
+      const filtered = rows.filter((e) => {
+        // 1) 过滤掉与当前译文完全相同的条目(避免显示"采纳自己当前译文")
+        if (e.target.trim() === cur) return false
+        // 2) 过滤掉作者是"我"的条目(团队译文仅显示他人版本)
+        if (myUserId && e.createdByUserId && e.createdByUserId === myUserId) return false
+        return true
+      })
+      setEntries(filtered)
+      setLoading(false)
+    })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceKey, logsVersion, myUserId])
+
+  // 数量变化时通知父组件(用于按钮变色)
+  useEffect(() => {
+    onCountChange?.(entries.length)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries.length])
+
+  // 关闭时不渲染列表(但仍执行查询以更新 count)
+  if (!open) return null
+  if (!source.trim()) return null
+  if (!loading && entries.length === 0) return null
+
+  return (
+    <Box
+      sx={{
+        gridColumn: 2,
+        gridRow: 'auto',
+        px: 1,
+        py: 0.75,
+        borderTop: 1,
+        borderColor: 'divider',
+        bgcolor: 'rgba(103, 185, 243, 0.05)',
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
+        <GroupIcon color="primary" sx={{ fontSize: 14 }} />
+        <Typography variant="caption" sx={{ fontWeight: 700, color: 'primary.main', fontSize: 'calc(var(--app-content-font-size) * 0.82)' }}>
+          团队译文 ({entries.length})
+        </Typography>
+        <Box sx={{ flex: 1 }} />
+        {loading && <CircularProgress size={12} thickness={6} />}
+      </Box>
+      <Stack spacing={0.5} sx={{ maxHeight: 240, overflow: 'auto' }}>
+        {entries.map((e, idx) => {
+          const nickname = e.createdBy?.trim() || '译员'
+          const initial = nickname.slice(0, 1)
+          const color = tmAvatarColor(nickname)
+          const isRich = hasRichTextHtml(e.target)
+          return (
+            <Paper
+              key={`${e.id ?? idx}-${e.updatedAt}`}
+              variant="outlined"
+              sx={{
+                p: 0.75,
+                borderColor: 'divider',
+                '&:hover': { borderColor: 'primary.main', bgcolor: 'action.hover' },
+              }}
+            >
+              <Stack direction="row" spacing={0.75} sx={{ alignItems: 'flex-start' }}>
+                <Avatar
+                  sx={{
+                    width: 22, height: 22,
+                    bgcolor: color, color: '#fff',
+                    fontSize: 'calc(var(--app-content-font-size) * 0.78)',
+                    fontWeight: 700, flexShrink: 0, mt: 0.1,
+                  }}
+                >
+                  {initial}
+                </Avatar>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Stack direction="row" spacing={0.5} sx={{ alignItems: 'baseline' }}>
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: 'calc(var(--app-content-font-size) * 0.8)',
+                        color: 'text.primary',
+                      }}
+                    >
+                      {nickname}
+                    </Typography>
+                    <Typography
+                      variant="caption"
+                      sx={{ color: 'text.disabled', fontSize: 'calc(var(--app-content-font-size) * 0.72)' }}
+                    >
+                      {tmFormatTime(e.updatedAt)}
+                    </Typography>
+                    <Box sx={{ flex: 1 }} />
+                    <Tooltip title={disabled ? '当前编辑台禁用' : '采纳此译文'}>
+                      <span>
+                        <IconButton
+                          size="small"
+                          disabled={disabled}
+                          onClick={() => onAdopt(e.target)}
+                          sx={{ p: 0.25 }}
+                          aria-label="采纳译文"
+                        >
+                          <DownloadDoneIcon sx={{ fontSize: 16, color: disabled ? undefined : 'success.main' }} />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                  </Stack>
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      fontSize: 'calc(var(--app-content-font-size) * 0.88)',
+                      lineHeight: 1.45,
+                      wordBreak: 'break-word',
+                      whiteSpace: 'pre-wrap',
+                      mt: 0.25,
+                    }}
+                  >
+                    {isRich ? (
+                      <span dangerouslySetInnerHTML={{ __html: e.target }} />
+                    ) : (
+                      e.target
+                    )}
+                  </Typography>
+                </Box>
+              </Stack>
+            </Paper>
+          )
+        })}
+      </Stack>
+    </Box>
+  )
 }
 
 // —— 选中文本/光标位置追踪工具 ——
@@ -593,10 +797,16 @@ function InlineSourceButtons({ onAction }: {
   )
 }
 
-function InlineTargetButtons({ onAction, onConfirmNext, segId }: {
+function InlineTargetButtons({ onAction, onConfirmNext, segId, teamCount, teamOpen, onToggleTeam }: {
   onAction: (action: string) => void
   onConfirmNext?: () => void
   segId?: ID
+  /** 团队译文条目数量(>0 时按钮变色) */
+  teamCount?: number
+  /** 团队译文是否已展开 */
+  teamOpen?: boolean
+  /** 切换团队译文展开/收起 */
+  onToggleTeam?: () => void
 }) {
   // onMouseDown preventDefault 阻止按钮抢占焦点，确保 execCommand 作用于 contenteditable
   const btnProps = {
@@ -615,12 +825,25 @@ function InlineTargetButtons({ onAction, onConfirmNext, segId }: {
   const mtText = useLatestTranslationsStore((s) => (segId != null ? s.entries[`mt:${segId}`]?.text : undefined))
   const aiText = useLatestTranslationsStore((s) => (segId != null ? s.entries[`ai:${segId}`]?.text : undefined))
 
+  const hasTeam = (teamCount ?? 0) > 0
+
   return (
     <Stack direction="row" spacing={0.05} sx={{ alignItems: 'center' }}>
       <Tooltip title="复制原文到译文"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onAction('copySource') }}><ContentCopyIcon sx={inlineIconSx} /></IconButton></Tooltip>
       <Tooltip title="清空译文"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onAction('clearTarget') }}><ClearIcon sx={inlineIconSx} /></IconButton></Tooltip>
       <Tooltip title="撤销"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onAction('undo') }}><UndoIcon sx={inlineIconSx} /></IconButton></Tooltip>
       <Tooltip title="重做"><IconButton {...btnProps} onClick={(e) => { e.stopPropagation(); onAction('redo') }}><RedoIcon sx={inlineIconSx} /></IconButton></Tooltip>
+      <Tooltip title={hasTeam ? (teamOpen ? '收起团队译文' : `展开团队译文（${teamCount} 条）`) : '暂无团队译文'}>
+        <span>
+          <IconButton
+            {...btnProps}
+            disabled={!hasTeam}
+            onClick={(e) => { e.stopPropagation(); onToggleTeam?.() }}
+          >
+            <GroupIcon sx={{ ...inlineIconSx, color: hasTeam ? (teamOpen ? 'primary.main' : 'success.main') : undefined }} />
+          </IconButton>
+        </span>
+      </Tooltip>
       <Tooltip title={tmText ? '复制首个匹配译文' : '无可用翻译记忆译文（请先在翻译记忆卡片触发匹配）'}><span><IconButton {...btnProps} disabled={!tmText} onClick={(e) => { e.stopPropagation(); onAction('copyTM') }}><LibraryBooksIcon sx={inlineIconSx} /></IconButton></span></Tooltip>
       <Tooltip title={mtText ? '复制机器译文' : '无可用机器译文（请先在机器翻译卡片触发翻译）'}><span><IconButton {...btnProps} disabled={!mtText} onClick={(e) => { e.stopPropagation(); onAction('copyMT') }}><MemoryIcon sx={inlineIconSx} /></IconButton></span></Tooltip>
       <Tooltip title={aiText ? '复制 AI 译文' : '无可用 AI 译文（请先在 AI 翻译卡片触发翻译）'}><span><IconButton {...btnProps} disabled={!aiText} onClick={(e) => { e.stopPropagation(); onAction('copyAI') }}><SmartToyIcon sx={inlineIconSx} /></IconButton></span></Tooltip>
@@ -1417,6 +1640,9 @@ export function DivBilingualEditor(): ReactElement {
   const selectFile = useProjectStore((s) => s.selectFile)
   const activeFileId = useProjectStore((s) => s.activeFileId)
   const currentProjectId = useProjectStore((s) => s.currentProjectId)
+  const projects = useProjectStore((s) => s.projects)
+  // 订阅协同日志版本变动：每次 tm_sync 追加日志都会变化，用于重新计算"团队译文数量"
+  const collabLogsVersion = useCollabStore((s) => s.logs.length)
   const theme = useUIStore((s) => s.theme)
   const setEditorActiveSegment = useEditorContextStore((s) => s.setActiveSegment)
   const clearEditorSelection = useEditorContextStore((s) => s.clearSelection)
@@ -1443,6 +1669,9 @@ export function DivBilingualEditor(): ReactElement {
   const [tmAutoFilling, setTmAutoFilling] = useState(false)
   const [showTmAutoFillDialog, setShowTmAutoFillDialog] = useState(false)
   const [tmAutoFillThreshold, setTmAutoFillThreshold] = useState('100')
+  // 团队译文自动填充状态 + 团队译文总条数（角标显示）
+  const [teamTmAutoFilling, setTeamTmAutoFilling] = useState(false)
+  const [teamTmTotalCount, setTeamTmTotalCount] = useState(0)
   // 剪贴板翻译
   const [showClipboardDialog, setShowClipboardDialog] = useState(false)
   const [clipboardManualText, setClipboardManualText] = useState('')
@@ -1531,6 +1760,36 @@ export function DivBilingualEditor(): ReactElement {
     const currentId = useProjectStore.getState().activeSegmentId
     if (currentId != null) {
       commitSegment(currentId, options?.status)
+
+      // Ctrl+Enter / Ctrl+Shift+Enter 等「显式确认并切走」的兜底：
+      // 若传入了「已确认状态」，立即 flush 当前段的 TM 广播（不依赖切段 effect 里的二次触发，
+      // 避免 commitSegment 虽同步 set()，但因微任务/重渲染时序导致 effect 读取 segments 时因
+      // ID 相同或 ref 滞后被 flush 内部的 snapshot 相等判断挡掉）
+      const confirmStatus = options?.status
+      if (
+        confirmStatus === 'translated' || confirmStatus === 'reviewing' ||
+        confirmStatus === 'approved' || confirmStatus === 'rejected'
+      ) {
+        const snap = segmentEntrySnapRef.current.get(currentId)
+        const published = flushSegmentTMEntry(currentId, snap)
+        if (published) {
+          console.debug(
+            '[editor][transitionTo] immediate TM flush ok segId=', currentId,
+            'status=', confirmStatus,
+          )
+          // 立即刷新快照基线为当前 target/status，避免后面切段 effect 再
+          // 次 flush 时因「快照=离开时 target」判定成"没变化"，但更重要的是
+          // 防止**重复广播**（因为切段 effect 里还会再调一次 flush）。
+          const ps = useProjectStore.getState()
+          const latest = ps.segments.find((s) => s.id === currentId)
+          if (latest) {
+            segmentEntrySnapRef.current.set(currentId, {
+              target: latest.target ?? '',
+              status: latest.status ?? 'untranslated',
+            })
+          }
+        }
+      }
     }
 
     // 2. 计算目标段
@@ -1659,6 +1918,16 @@ export function DivBilingualEditor(): ReactElement {
         } else if (hasTarget && prevSeg.status === 'untranslated') {
           useProjectStore.getState().updateSegment(prevSeg.id, { status: 'draft' })
         }
+        // 协同：离开前一段 → 判断是否要广播 TM 条目(简化方案:已确认状态 + target 有变化才发)
+        const entrySnap = segmentEntrySnapRef.current.get(prevSeg.id)
+        flushSegmentTMEntry(prevSeg.id, entrySnap)
+        // 协同：离开前一段 → unlock（仅当锁定者是"我"自己时）
+        const cst = useCollabStore.getState()
+        const prevLock = cst.locks[String(prevSeg.id)]
+        if (prevLock && prevLock.userId === cst.myUserId) {
+          void publishSegmentUnlock(prevSeg.id)
+        }
+        cst.setEditingSegment(null)
       }
     }
     prevActiveIdRef.current = activeSegmentId
@@ -1668,8 +1937,28 @@ export function DivBilingualEditor(): ReactElement {
     // 翻译联动：激活段变化时，发送原文给当前 active 的功能卡片（防抖 400ms）
     if (activeSegmentId != null) {
       const seg = useProjectStore.getState().segments.find((s) => s.id === activeSegmentId)
+      // 协同：进入新段时,把此刻的 {target, status} 写入快照 map(离开段时做差异比较的基线)
+      if (seg && seg.id != null) {
+        segmentEntrySnapRef.current.set(seg.id, {
+          target: seg.target ?? '',
+          status: seg.status ?? 'untranslated',
+        })
+      }
       if (seg) {
         dispatchSegmentActivated(activeSegmentId, htmlToPlainText(seg.source ?? ''))
+      }
+      // 协同：进入新段 → 先判断是否被他人锁定，再决定 lock
+      const cst2 = useCollabStore.getState()
+      const cfgName2 = cst2.config.nickname?.trim() || '译员'
+      if (cst2.connectionStatus === 'connected' && seg?.id != null) {
+        const segLock = cst2.locks[String(seg.id)]
+        const lockedByOthers = segLock && segLock.userId !== cst2.myUserId
+        if (!lockedByOthers) {
+          void publishSegmentLock(seg.id, cfgName2)
+          cst2.setEditingSegment(seg.id)
+        }
+        // 同步我的 presence（让新加入者知道我在编辑哪段）
+        void publishPresenceRefresh()
       }
       // 键盘/按钮驱动的段切换 → 自动聚焦译文编辑区
       if (autoFocusTargetRef.current) {
@@ -1679,9 +1968,27 @@ export function DivBilingualEditor(): ReactElement {
       }
     } else {
       autoFocusTargetRef.current = false
+      // 协同：无激活段时清 editing segment
+      const cst3 = useCollabStore.getState()
+      if (cst3.connectionStatus === 'connected') {
+        cst3.setEditingSegment(null)
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSegmentId])
+
+  // ====== 协同翻译：进入段快照（离开段时用其判断是否需要广播 TM） ======
+  // 方案:只在「离开激活段 / Ctrl+S / 断开协同 / 关闭页面」时,结合「进入快照」+「离开时刻 status=已确认」+「target 有差异」来决定是否广播。
+  // 这避免了旧逻辑「每敲一字广播」带来的中间态污染与消息风暴。
+  const segmentEntrySnapRef = useRef<Map<ID, SegmentEntrySnapshot>>(new Map())
+  // 把旧 ref 也导出给外部(如有残留调用)指向同一个 Map,避免旧引用失效
+  const segmentSnapRef = segmentEntrySnapRef
+
+  // 协同翻译：读取连接状态与 locks 映射，供段渲染层显示锁定遮罩
+  const collabConnected = useCollabStore((s) => s.connectionStatus === 'connected')
+  const collabUsers = useCollabStore((s) => s.users)
+  const collabLocks = useCollabStore((s) => s.locks)
+  const myCollabUserId = useCollabStore((s) => s.myUserId)
 
   // CSS 变量：列宽（隐藏时设为 0px）
   const cssVars = useMemo(() => {
@@ -1711,13 +2018,29 @@ export function DivBilingualEditor(): ReactElement {
     transitionTo({ type: 'nextUntranslated' }, { focusTarget: true })
   }, [transitionTo])
 
-  // 全局快捷键：Ctrl+F 搜索；Ctrl+Shift+M/S 合并/拆分；Ctrl+Shift+Enter 下个未译段
+  // 全局快捷键：Ctrl+F 搜索；Ctrl+Shift+M/S 合并/拆分；Ctrl+Shift+Enter 下个未译段；Ctrl+S 保存(含 TM 广播兜底)
   // 注：useEffect 必须放在 goNextUntranslated 之后，避免"使用前未声明"
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault()
         setShowSearchBar((v) => !v)
+        return
+      }
+      // Ctrl+S / Cmd+S 主动保存 → 也作为协同 TM 广播的手动触发点(用户显式按了保存就认为"已确认")
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        const ps = useProjectStore.getState()
+        if (ps.activeSegmentId != null) {
+          // 聚焦编辑态先 commit 到 store,保证读到的是最新值
+          if (focusEditingRef.current) {
+            commitSegment(ps.activeSegmentId)
+          }
+          flushSegmentTMEntry(
+            ps.activeSegmentId,
+            segmentEntrySnapRef.current.get(ps.activeSegmentId),
+          )
+        }
         return
       }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Enter') {
@@ -1747,7 +2070,31 @@ export function DivBilingualEditor(): ReactElement {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [runAction, goNextUntranslated])
+  }, [runAction, goNextUntranslated, commitSegment])
+
+  // 关闭页面前 flush 当前激活段 TM,避免最后一段未切走即离开导致漏发
+  useEffect(() => {
+    const handler = () => {
+      const ps = useProjectStore.getState()
+      if (ps.activeSegmentId != null) {
+        flushSegmentTMEntry(
+          ps.activeSegmentId,
+          segmentEntrySnapRef.current.get(ps.activeSegmentId),
+        )
+      }
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [])
+
+  // 断开协同时先 flush 当前激活段,再真正调用 stopCollab
+  const stopCollabWithFlush = useCallback(async () => {
+    const ps = useProjectStore.getState()
+    await stopCollab({
+      snapshots: segmentEntrySnapRef.current,
+      activeSegmentId: ps.activeSegmentId ?? null,
+    })
+  }, [])
 
   // —— 操作 ——
 
@@ -2075,6 +2422,70 @@ export function DivBilingualEditor(): ReactElement {
     )
   }, [tmAutoFilling])
 
+  // —— 团队译文自动填充：遍历未译段，查团队译文记忆库，用首个匹配填充 ——
+  const handleTeamTmAutoFill = useCallback(async () => {
+    if (teamTmAutoFilling) return
+    const projState = useProjectStore.getState()
+    const projectId = projState.currentProjectId
+    if (projectId == null) {
+      useUIStore.getState().notify('warning', '请先打开或创建项目')
+      return
+    }
+    const allSegments = projState.segments
+    const untranslated = allSegments.filter((s) => needsTranslation(s))
+    if (untranslated.length === 0) {
+      useUIStore.getState().notify('info', '当前文件没有需要翻译的段落')
+      return
+    }
+    const cur = projState.projects.find((p) => p.id === projectId)
+    const src = (cur?.sourceLang ?? 'en') as LanguageCode
+    const tgt = (cur?.targetLang ?? 'zh-CN') as LanguageCode
+    const entries = await loadTeamTMEntries(src, tgt)
+    if (entries.length === 0) {
+      useUIStore.getState().notify('info', '团队译文记忆库为空，无可填充内容')
+      return
+    }
+    setTeamTmAutoFilling(true)
+    let filled = 0
+    let skipped = 0
+    const updateSegment = projState.updateSegment
+    for (const seg of untranslated) {
+      if (!seg.id || !seg.source?.trim()) { skipped++; continue }
+      const srcTrimmed = seg.source.trim()
+      // 取首个团队译文（已按 updatedAt 倒序）
+      const match = entries.find((e) => e.source.trim() === srcTrimmed)
+      if (match && match.target.trim()) {
+        await updateSegment(seg.id, { target: match.target.trim(), status: 'draft' })
+        filled++
+      } else {
+        skipped++
+      }
+    }
+    setTeamTmAutoFilling(false)
+    useUIStore.getState().notify(
+      filled > 0 ? 'success' : 'info',
+      `团队译文填充完成：填充 ${filled} 段，跳过 ${skipped} 段`,
+    )
+  }, [teamTmAutoFilling])
+
+  // —— 团队译文总数：按当前项目语言对统计（用于按钮颜色 + 角标） ——
+  useEffect(() => {
+    let cancelled = false
+    if (currentProjectId == null) { setTeamTmTotalCount(0); return }
+    const cur = projects.find((p) => p.id === currentProjectId)
+    const src = (cur?.sourceLang ?? 'en') as LanguageCode
+    const tgt = (cur?.targetLang ?? 'zh-CN') as LanguageCode
+    void (async () => {
+      try {
+        const list = await loadTeamTMEntries(src, tgt)
+        if (!cancelled) setTeamTmTotalCount(list.length)
+      } catch {
+        if (!cancelled) setTeamTmTotalCount(0)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [currentProjectId, projects, collabLogsVersion])
+
   // —— 渲染 ——
 
   const isDark = theme === 'dark'
@@ -2085,6 +2496,11 @@ export function DivBilingualEditor(): ReactElement {
   const hoverBg = isDark ? 'rgba(144,202,249,0.08)' : 'rgba(25,118,210,0.04)'
   const textColor = isDark ? '#e0e0e0' : 'rgba(0,0,0,0.87)'
   const secondaryColor = isDark ? '#b0bec5' : 'rgba(0,0,0,0.6)'
+
+  // 项目语言对(用于团队译文卡片 TM 查询)
+  const currentProject = projects.find((p) => p.id === currentProjectId) ?? null
+  const editorSourceLang = (currentProject?.sourceLang ?? 'en') as LanguageCode
+  const editorTargetLang = (currentProject?.targetLang ?? 'zh-CN') as LanguageCode
 
   // 列头模板：隐藏时仍保留图标所需最小宽度（32px），确保图标可点击恢复
   // 行内容则通过 CSS 变量（0px）+ display:none 完全隐藏
@@ -2256,6 +2672,29 @@ export function DivBilingualEditor(): ReactElement {
           <IconButton size="small" onClick={handleExportToClipboard} sx={{ color: 'text.disabled' }}>
             <ContentCopyIcon fontSize="small" />
           </IconButton>
+        </Tooltip>
+        <Tooltip title={
+          teamTmAutoFilling
+            ? '团队译文填充中…'
+            : teamTmTotalCount > 0
+              ? `团队译文自动填充未译段（共 ${teamTmTotalCount} 条团队译文，用首个匹配填充）`
+              : '暂无团队译文（等待其他译员分享译文后可填充）'
+        }>
+          <Badge
+            badgeContent={teamTmTotalCount > 0 ? teamTmTotalCount : 0}
+            color={teamTmTotalCount > 0 ? 'success' : 'default'}
+            max={999}
+            sx={{ '& .MuiBadge-badge': { fontSize: 10, height: 16, minWidth: 16, padding: '0 4px' } }}
+          >
+            <IconButton
+              size="small"
+              disabled={teamTmAutoFilling || teamTmTotalCount === 0}
+              onClick={() => handleTeamTmAutoFill()}
+              sx={{ color: teamTmTotalCount > 0 ? 'success.main' : 'text.disabled' }}
+            >
+              {teamTmAutoFilling ? <CircularProgress size={16} /> : <PeopleAltIcon fontSize="small" />}
+            </IconButton>
+          </Badge>
         </Tooltip>
         <Tooltip title={tmAutoFilling ? 'TM 自动填充中…' : 'TM 自动填充未译段（Shift+点击设置阈值）'}>
           <IconButton
@@ -2574,6 +3013,15 @@ export function DivBilingualEditor(): ReactElement {
             const isActive = seg.id === activeSegmentId
             const isOdd = vItem.index % 2 === 1
 
+            // 协同：判断段是否被他人正在编辑（非阻塞提示）
+            const segLock = seg.id != null ? collabLocks[String(seg.id)] : undefined
+            const lockedByOther =
+              collabConnected && segLock != null && segLock.userId !== myCollabUserId
+            const lockOwnerNick =
+              lockedByOther
+                ? (collabUsers.find((u) => u.userId === segLock.userId)?.nickname ?? '其他译员')
+                : null
+
             return (
               <Box
                 key={seg.id ?? vItem.index}
@@ -2588,9 +3036,28 @@ export function DivBilingualEditor(): ReactElement {
                   bgcolor: isActive ? selectedBg : isOdd ? oddRowBg : rowBg,
                   borderBottom: 1,
                   borderColor: 'divider',
+                  borderLeft: lockedByOther ? 3 : 0,
+                  borderLeftColor: 'warning.main',
                   '&:hover': { bgcolor: isActive ? selectedBg : hoverBg },
                 }}
               >
+                {lockedByOther && (
+                  <Chip
+                    size="small"
+                    variant="filled"
+                    color="warning"
+                    icon={<LockIcon />}
+                    label={`${lockOwnerNick} 正在编辑`}
+                    sx={{
+                      position: 'absolute',
+                      top: 4,
+                      right: 6,
+                      zIndex: 10,
+                      height: 22,
+                      '& .MuiChip-label': { px: 0.5, fontSize: 'calc(var(--app-content-font-size) * 0.75)' },
+                    }}
+                  />
+                )}
                 {layout === 'stack' ? (
                   <StackModeRow
                     seg={seg}
@@ -2617,6 +3084,8 @@ export function DivBilingualEditor(): ReactElement {
                     hiddenNotes={hiddenNotes}
                     terms={terms}
                     onInsertTermTarget={onInsertTermTarget}
+                    sourceLang={editorSourceLang}
+                    targetLang={editorTargetLang}
                   />
                 ) : (
                   <TableModeRow
@@ -2644,6 +3113,8 @@ export function DivBilingualEditor(): ReactElement {
                     hiddenNotes={hiddenNotes}
                     terms={terms}
                     onInsertTermTarget={onInsertTermTarget}
+                    sourceLang={editorSourceLang}
+                    targetLang={editorTargetLang}
                   />
                 )}
               </Box>
@@ -2676,6 +3147,8 @@ export function DivBilingualEditor(): ReactElement {
           sourceEditingValueRef={sourceEditingValueRef}
           onSourceCommit={handleSourceCommit}
           onSourceCancel={handleSourceCancel}
+          sourceLang={editorSourceLang}
+          targetLang={editorTargetLang}
         />
       )}
     </Box>
@@ -2717,6 +3190,10 @@ interface SharedRowProps {
   hiddenNotes: boolean
   terms: Term[]
   onInsertTermTarget: (target: string) => void
+  /** 项目源语言代码(用于团队译文卡片的 TM 精确查询) */
+  sourceLang: LanguageCode
+  /** 项目目标语言代码(用于团队译文卡片的 TM 精确查询) */
+  targetLang: LanguageCode
 }
 
 // —— 底部聚焦编辑台 ——
@@ -2741,12 +3218,20 @@ interface FocusEditPanelProps {
   sourceEditingValueRef: MutableRefObject<string>
   onSourceCommit: () => void
   onSourceCancel: () => void
+  /** 项目源语言代码(用于团队译文卡片 TM 精确查询) */
+  sourceLang: LanguageCode
+  /** 项目目标语言代码(用于团队译文卡片 TM 精确查询) */
+  targetLang: LanguageCode
 }
 
 function FocusEditPanel(props: FocusEditPanelProps) {
   const { seg, editingValueRef, commitSegment, transitionTo, onStatusClick, runAction,
     hiddenStatus, hiddenNotes, textColor, secondaryColor, isDark, selectedBg, terms, onInsertTermTarget,
-    sourceEditingId, sourceEditingValueRef, onSourceCommit, onSourceCancel } = props
+    sourceEditingId, sourceEditingValueRef, onSourceCommit, onSourceCancel,
+    sourceLang, targetLang } = props
+  // 团队译文展开状态(默认收起,用户点按钮才展开)
+  const [teamOpen, setTeamOpen] = useState(false)
+  const [teamCount, setTeamCount] = useState(0)
 
   const panelBg = isDark ? '#1a2a3a' : '#f8f9fb'
 
@@ -3074,12 +3559,12 @@ function FocusEditPanel(props: FocusEditPanelProps) {
 
       {/* 内容区：标注 | 原文+译文 | 备注 */}
       <Box sx={{ display: 'grid', gridTemplateColumns: `${focusStatusW} 1fr ${focusNotesW}` }}>
-        {/* 标注：跨 4 行 */}
+        {/* 标注：跨 5 行 */}
         <Box
           onClick={(e) => { e.stopPropagation(); onStatusClick() }}
           sx={{
             gridColumn: 1,
-            gridRow: '1 / span 4',
+            gridRow: '1 / span 5',
             display: hiddenStatus ? 'none' : 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -3172,7 +3657,7 @@ function FocusEditPanel(props: FocusEditPanelProps) {
 
         {/* 译文按钮条 */}
         <Box sx={{ gridColumn: 2, gridRow: 3, px: 1, pt: 0.5, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <InlineTargetButtons onAction={onTargetAction} segId={seg?.id} onConfirmNext={() => transitionTo({ type: 'next' }, { status: 'translated', focusTarget: true })} />
+          <InlineTargetButtons onAction={onTargetAction} segId={seg?.id} onConfirmNext={() => transitionTo({ type: 'next' }, { status: 'translated', focusTarget: true })} teamCount={teamCount} teamOpen={teamOpen} onToggleTeam={() => setTeamOpen((v) => !v)} />
         </Box>
 
         {/* 译文内容（始终编辑态） */}
@@ -3202,10 +3687,10 @@ function FocusEditPanel(props: FocusEditPanelProps) {
           />
         </Box>
 
-        {/* 备注：跨 4 行 */}
+        {/* 备注：跨 5 行 */}
         <Box sx={{
           gridColumn: 3,
-          gridRow: '1 / span 4',
+          gridRow: '1 / span 5',
           px: 1, py: 0.5,
           borderLeft: hiddenNotes ? 0 : 1,
           borderColor: 'divider',
@@ -3218,6 +3703,23 @@ function FocusEditPanel(props: FocusEditPanelProps) {
           maxHeight: 200,
         }}>
           {seg.notes || ''}
+        </Box>
+
+        {/* row 5: 团队译文卡片(用户点按钮展开时显示) */}
+        <Box sx={{ gridColumn: 2, gridRow: 5 }}>
+          <TeamTranslationCards
+            source={seg.source ?? ''}
+            currentTarget={seg.target ?? ''}
+            sourceLang={sourceLang}
+            targetLang={targetLang}
+            disabled={false}
+            onAdopt={(val) => {
+              commitSegment(seg.id!, undefined, val)
+              setTeamOpen(false)
+            }}
+            open={teamOpen}
+            onCountChange={setTeamCount}
+          />
         </Box>
       </Box>
 
@@ -3240,7 +3742,11 @@ function FocusEditPanel(props: FocusEditPanelProps) {
 
 function StackModeRow(props: SharedRowProps) {
   const { seg, isActive, disableEdit, showFocusPanel, isSourceEditing, textColor, secondaryColor, isDark, selectedBg, editingValueRef, sourceEditingValueRef, runAction,
-    onRowClick, onTargetClick, onStatusClick, onCommit, onConfirmNext, onKeyDown, onSourceCommit, onSourceCancel, hiddenStatus, hiddenNotes, terms, onInsertTermTarget } = props
+    onRowClick, onTargetClick, onStatusClick, onCommit, onConfirmNext, onKeyDown, onSourceCommit, onSourceCancel, hiddenStatus, hiddenNotes, terms, onInsertTermTarget,
+    sourceLang, targetLang } = props
+  // 团队译文展开状态(默认收起,用户点按钮才展开)
+  const [teamOpen, setTeamOpen] = useState(false)
+  const [teamCount, setTeamCount] = useState(0)
   const statusCfg = STATUS_CONFIG[seg.status]
 
   const handleBlur = useCallback(() => {
@@ -3273,7 +3779,7 @@ function StackModeRow(props: SharedRowProps) {
         onClick={(e) => { e.stopPropagation(); onStatusClick() }}
         sx={{
           gridColumn: 1,
-          gridRow: '1 / span 4',
+          gridRow: '1 / span 5',
           display: hiddenStatus ? 'none' : 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -3383,7 +3889,7 @@ function StackModeRow(props: SharedRowProps) {
           ...(isActive ? {} : { pt: 0, pb: 0, maxHeight: 0, opacity: 0 }),
         }}
       >
-        {isActive && !disableEdit && <InlineTargetButtons onAction={onTargetAction} segId={seg.id} onConfirmNext={onConfirmNext} />}
+        {isActive && !disableEdit && <InlineTargetButtons onAction={onTargetAction} segId={seg.id} onConfirmNext={onConfirmNext} teamCount={teamCount} teamOpen={teamOpen} onToggleTeam={() => setTeamOpen((v) => !v)} />}
       </Box>
 
       {/* row 4: 译文内容（始终编辑态；聚焦编辑台开启时退化为只读） */}
@@ -3435,11 +3941,11 @@ function StackModeRow(props: SharedRowProps) {
         )}
       </Box>
 
-      {/* 备注：跨 4 行 */}
+      {/* 备注：跨 5 行 */}
       <Box
         sx={{
           gridColumn: 3,
-          gridRow: '1 / span 4',
+          gridRow: '1 / span 5',
           px: 1,
           py: 0.5,
           borderLeft: hiddenNotes ? 0 : 1,
@@ -3456,6 +3962,21 @@ function StackModeRow(props: SharedRowProps) {
       >
         {seg.notes || ''}
       </Box>
+
+      {/* row 5: 团队译文卡片(仅激活时有内容时显示) */}
+      <TeamTranslationCards
+        source={seg.source ?? ''}
+        currentTarget={seg.target ?? ''}
+        sourceLang={sourceLang}
+        targetLang={targetLang}
+        disabled={disableEdit}
+        onAdopt={(val) => {
+          onCommit(val)
+          setTeamOpen(false)
+        }}
+        open={teamOpen}
+        onCountChange={setTeamCount}
+      />
     </Box>
   )
 }
@@ -3471,7 +3992,11 @@ function StackModeRow(props: SharedRowProps) {
 
 function TableModeRow(props: SharedRowProps) {
   const { seg, isActive, disableEdit, showFocusPanel, isSourceEditing, textColor, secondaryColor, isDark, selectedBg, editingValueRef, sourceEditingValueRef, runAction,
-    onRowClick, onTargetClick, onStatusClick, onCommit, onConfirmNext, onKeyDown, onSourceCommit, onSourceCancel, hiddenStatus, hiddenNotes, terms, onInsertTermTarget } = props
+    onRowClick, onTargetClick, onStatusClick, onCommit, onConfirmNext, onKeyDown, onSourceCommit, onSourceCancel, hiddenStatus, hiddenNotes, terms, onInsertTermTarget,
+    sourceLang, targetLang } = props
+  // 团队译文展开状态(默认收起,用户点按钮才展开)
+  const [teamOpen, setTeamOpen] = useState(false)
+  const [teamCount, setTeamCount] = useState(0)
   const statusCfg = STATUS_CONFIG[seg.status]
 
   const handleBlur = useCallback(() => {
@@ -3499,12 +4024,12 @@ function TableModeRow(props: SharedRowProps) {
         cursor: 'pointer',
       }}
     >
-      {/* 标注：跨 2 行 */}
+      {/* 标注：跨 3 行 */}
       <Box
         onClick={(e) => { e.stopPropagation(); onStatusClick() }}
         sx={{
           gridColumn: 1,
-          gridRow: '1 / span 2',
+          gridRow: '1 / span 3',
           display: hiddenStatus ? 'none' : 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -3618,7 +4143,7 @@ function TableModeRow(props: SharedRowProps) {
           ...(isActive ? {} : { pt: 0, pb: 0, maxHeight: 0, opacity: 0 }),
         }}
       >
-        {isActive && !disableEdit && <InlineTargetButtons onAction={onTargetAction} segId={seg.id} onConfirmNext={onConfirmNext} />}
+        {isActive && !disableEdit && <InlineTargetButtons onAction={onTargetAction} segId={seg.id} onConfirmNext={onConfirmNext} teamCount={teamCount} teamOpen={teamOpen} onToggleTeam={() => setTeamOpen((v) => !v)} />}
       </Box>
 
       {/* row 2: 译文内容（始终编辑态；聚焦编辑台开启时退化为只读） */}
@@ -3673,11 +4198,11 @@ function TableModeRow(props: SharedRowProps) {
         )}
       </Box>
 
-      {/* 备注：跨 2 行 */}
+      {/* 备注：跨 3 行 */}
       <Box
         sx={{
           gridColumn: 4,
-          gridRow: '1 / span 2',
+          gridRow: '1 / span 3',
           px: 1,
           py: 0.5,
           wordBreak: 'break-word',
@@ -3691,6 +4216,28 @@ function TableModeRow(props: SharedRowProps) {
         }}
       >
         {seg.notes || ''}
+      </Box>
+
+      {/* row 3: 团队译文卡片(跨 原文+译文 两列,仅激活时有内容时显示) */}
+      <Box
+        sx={{
+          gridColumn: '2 / span 2',
+          gridRow: 3,
+        }}
+      >
+        <TeamTranslationCards
+          source={seg.source ?? ''}
+          currentTarget={seg.target ?? ''}
+          sourceLang={sourceLang}
+          targetLang={targetLang}
+          disabled={disableEdit}
+          onAdopt={(val) => {
+            onCommit(val)
+            setTeamOpen(false)
+          }}
+          open={teamOpen}
+          onCountChange={setTeamCount}
+        />
       </Box>
     </Box>
   )

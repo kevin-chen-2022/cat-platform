@@ -53,6 +53,7 @@ import StopIcon from '@mui/icons-material/Stop'
 import FileDownloadIcon from '@mui/icons-material/FileDownload'
 import { DivBilingualEditor } from '@/features/editor/components/DivBilingualEditor'
 import { ProjectPanel as FeatureProjectPanel } from '@/features/project/components/ProjectPanel'
+import { CollabSettingsSection } from '@/features/collab/components/CollabSettingsSection'
 import {
   useEditorContextStore, useTermStore, useProjectStore, useUIStore,
   useDictionaryStore,
@@ -65,7 +66,7 @@ import {
   useTMStore,
   useUiAppearanceStore,
   FONT_PRESETS, DEFAULT_FONT_SIZE, MIN_FONT_SIZE, MAX_FONT_SIZE,
-  COMMON_LANGUAGES, toBaiduLang, toCaiyunTransType,
+  toBaiduLang, toCaiyunTransType,
   useQAStore, AI_QA_CHECK_SYSTEM_PROMPT,
   useLatestTranslationsStore,
   useSyncStore,
@@ -92,11 +93,22 @@ import VisibilityIcon from '@mui/icons-material/Visibility'
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
 import { MarkdownRenderer } from '@/shared/components/MarkdownRenderer'
 import { ExpandableText } from '@/shared/components/ExpandableText'
+import { LangAutocomplete } from '@/shared/components/LangAutocomplete'
 import { doInsertViaExecCommand } from '@/shared/utils/insertText'
 import { matchTermsForSource, buildTermHint } from '@/shared/utils/termMatch'
 import { htmlToPlainText } from '@/shared/utils/segmentFilter'
 import { similarityScore, searchMemory } from '@/services/tm/engine'
 import { runConnectionTest } from '@/services/sync/webdav/provider'
+import {
+  uploadProjectBackup,
+  listRemoteBackups,
+  restoreProjectBackup,
+  syncTM,
+  formatBytes as formatBytesRemote,
+  type RemoteBackupEntry,
+  type BackupRange,
+} from '@/services/sync/webdav/backup'
+import type { ImportStrategy } from '@/services/io'
 import { db } from '@data/db'
 import type { Segment, TMEntry, LanguageCode, Project, ID } from '@/types'
 import {
@@ -206,14 +218,16 @@ export function TMPanel(): ReactElement {
     ;(async () => {
       try {
         let rows: TMEntry[] = []
-        if (scope === 'project' && currentProjectId != null) {
-          rows = await db.tmEntries.where('projectId').equals(currentProjectId as number).toArray()
-        } else if (sourceLang) {
-          rows = await db.tmEntries.where('sourceLang').equals(sourceLang).toArray()
-        } else {
-          rows = await db.tmEntries.toArray()
-        }
-        if (!cancelled) setTmEntries(rows)
+    if (scope === 'project' && currentProjectId != null) {
+      // 项目范围:包含「本项目专用条目」+「全局共享条目(projectId 为 null/undefined,如协同翻译分享的译文)」
+      const all = await db.tmEntries.toArray()
+      rows = all.filter((e) => e.projectId == null || e.projectId === currentProjectId)
+    } else if (sourceLang) {
+      rows = await db.tmEntries.where('sourceLang').equals(sourceLang).toArray()
+    } else {
+      rows = await db.tmEntries.toArray()
+    }
+    if (!cancelled) setTmEntries(rows)
       } catch (err) {
         console.error('[TMPanel:loadTM]', err)
         if (!cancelled) setTmEntries([])
@@ -1837,8 +1851,8 @@ export function ProjectDictionaryLibraryPanel(): ReactElement {
   // 表格统一样式（Grid 布局，表头与行体共用同一列模板，保证对齐）
   // 行高 = 行内最高单元格高度（alignItems: stretch 统高 + 单元格 flex center 居中）
   const gridTemplate = '36px 1fr 1fr 1fr 56px'
-  const thSx = { px: 1, py: 0.5, textAlign: 'left', fontSize: '0.75rem', fontWeight: 600, color: 'text.secondary', borderBottom: 1, borderColor: 'divider', whiteSpace: 'nowrap', userSelect: 'none', overflow: 'hidden', textOverflow: 'ellipsis', display: 'flex', alignItems: 'center' } as const
-  const tdSx = { px: 1, py: 0.5, fontSize: '0.8125rem', borderBottom: 1, borderColor: 'divider', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, display: 'flex', alignItems: 'center' } as const
+  const thSx = { px: 1, py: 0.5, textAlign: 'left', fontSize: 'calc(var(--app-content-font-size) * 0.86)', fontWeight: 600, color: 'text.secondary', borderBottom: 1, borderColor: 'divider', whiteSpace: 'nowrap', userSelect: 'none', overflow: 'hidden', textOverflow: 'ellipsis', display: 'flex', alignItems: 'center' } as const
+  const tdSx = { px: 1, py: 0.5, fontSize: 'calc(var(--app-content-font-size) * 0.93)', borderBottom: 1, borderColor: 'divider', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, display: 'flex', alignItems: 'center' } as const
 
   return (
     <Box sx={{ ..._sty, display: 'flex', flexDirection: 'column', p: 2 }}>
@@ -2411,11 +2425,11 @@ export function ProjectMemoryLibraryPanel(): ReactElement {
   // Grid 列模板：复选 | 原文 | 译文 | 来源 | 创建时间 | 操作
   // 原文/译文用 1fr + 换行显示全文；来源/时间固定宽度
   const gridTemplate = '36px 1fr 1fr 120px 110px 56px'
-  const thSx = { px: 1, py: 0.5, textAlign: 'left', fontSize: '0.75rem', fontWeight: 600, color: 'text.secondary', borderBottom: 1, borderColor: 'divider', whiteSpace: 'nowrap', userSelect: 'none', overflow: 'hidden', textOverflow: 'ellipsis' } as const
+  const thSx = { px: 1, py: 0.5, textAlign: 'left', fontSize: 'calc(var(--app-content-font-size) * 0.86)', fontWeight: 600, color: 'text.secondary', borderBottom: 1, borderColor: 'divider', whiteSpace: 'nowrap', userSelect: 'none', overflow: 'hidden', textOverflow: 'ellipsis' } as const
   // 原文/译文单元格：允许换行显示全文；高度跟随行内最高字段，内容垂直居中
-  const tdWrapSx = { px: 1, py: 0.5, fontSize: '0.8125rem', borderBottom: 1, borderColor: 'divider', whiteSpace: 'normal', wordBreak: 'break-word', minWidth: 0, display: 'flex', alignItems: 'center' } as const
+  const tdWrapSx = { px: 1, py: 0.5, fontSize: 'calc(var(--app-content-font-size) * 0.93)', borderBottom: 1, borderColor: 'divider', whiteSpace: 'normal', wordBreak: 'break-word', minWidth: 0, display: 'flex', alignItems: 'center' } as const
   // 来源/时间/操作单元格：单行省略；高度跟随行内最高字段，内容垂直居中
-  const tdSx = { px: 1, py: 0.5, fontSize: '0.8125rem', borderBottom: 1, borderColor: 'divider', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, display: 'flex', alignItems: 'center' } as const
+  const tdSx = { px: 1, py: 0.5, fontSize: 'calc(var(--app-content-font-size) * 0.93)', borderBottom: 1, borderColor: 'divider', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, display: 'flex', alignItems: 'center' } as const
 
   return (
     <Box sx={{ ..._sty, display: 'flex', flexDirection: 'column', p: 2 }}>
@@ -2977,20 +2991,24 @@ export function FragmentSearchPanel(): ReactElement {
   )
 }
 
-export function SettingsPanel(): ReactElement {
+export function SettingsPanel({ embedded = false, initialSection = 'basic' }: { embedded?: boolean; initialSection?: string } = {}): ReactElement {
   // 一级 Accordion 互斥：基本设置 / 词典查询 / 机器翻译 / AI问答 / 数据备份，一次只展开一个
-  const [level1Expanded, setLevel1Expanded] = useState<string>('basic')
+  const [level1Expanded, setLevel1Expanded] = useState<string>(initialSection || 'basic')
   const handleL1Expand = (panel: string) => (_e: unknown, isExpanded: boolean) => {
     setLevel1Expanded(isExpanded ? panel : '')
   }
 
   return (
     <Box sx={{ ..._sty, overflowY: 'auto' }}>
-      <Stack className="panel-header" direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-        <SettingsIcon color="primary" />
-        <Typography variant="h6">设置</Typography>
-      </Stack>
-      <Divider className="panel-header" sx={{ my: 1 }} />
+      {!embedded && (
+        <>
+          <Stack className="panel-header" direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+            <SettingsIcon color="primary" />
+            <Typography variant="h6">设置</Typography>
+          </Stack>
+          <Divider className="panel-header" sx={{ my: 1 }} />
+        </>
+      )}
 
       {/* 一级：基本设置（字体 + 字号） */}
       <Accordion expanded={level1Expanded === 'basic'} onChange={handleL1Expand('basic')} disableGutters>
@@ -3060,6 +3078,14 @@ export function SettingsPanel(): ReactElement {
         </AccordionDetails>
       </Accordion>
 
+      {/* 网络协同翻译（参与 1 级互斥展开） */}
+      <Box sx={{ mt: 0.5 }}>
+        <CollabSettingsSection
+          expanded={level1Expanded === 'collab'}
+          onChange={(isExpanded) => setLevel1Expanded(isExpanded ? 'collab' : '')}
+        />
+      </Box>
+
       {/* 一级：数据备份（自动快照 + 本地备份提醒） */}
       <Accordion expanded={level1Expanded === 'backup'} onChange={handleL1Expand('backup')} disableGutters>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
@@ -3072,7 +3098,110 @@ export function SettingsPanel(): ReactElement {
           <BackupSettingsSection />
         </AccordionDetails>
       </Accordion>
+
+      {/* 危险区域：销毁本地所有数据 */}
+      <Box sx={{ mt: 2, p: 1.5, border: '1px solid', borderColor: 'error.main', borderRadius: 1, bgcolor: 'rgba(211, 47, 47, 0.04)' }}>
+        <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mb: 1 }}>
+          <WarningIcon color="error" fontSize="small" />
+          <Typography variant="subtitle2" color="error" sx={{ fontWeight: 600 }}>危险区域</Typography>
+        </Stack>
+        <DangerZoneSection />
+      </Box>
     </Box>
+  )
+}
+
+/** 危险区域：销毁本地所有数据（IndexedDB + localStorage），清除后自动刷新重建空状态 */
+function DangerZoneSection(): ReactElement {
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [confirmText, setConfirmText] = useState('')
+  const [destroying, setDestroying] = useState(false)
+
+  const handleDestroy = async () => {
+    setDestroying(true)
+    try {
+      // 1. 删除整个 IndexedDB 数据库（含所有表：项目、文件、段、TM、TB、设置、布局、快照等）
+      await db.delete()
+      // 2. 清除所有 cat.* 前缀的 localStorage（主题、外观、术语、MT/词典/AI质检/同步偏好）
+      const keysToRemove: string[] = []
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i)
+        if (k && k.startsWith('cat.')) keysToRemove.push(k)
+      }
+      keysToRemove.forEach((k) => localStorage.removeItem(k))
+      // 3. 重载页面：AppShell 初始化会调用 seedInitialData() 重建默认设置，确保空数据下正常启动
+      window.location.reload()
+    } catch (err) {
+      console.error('[DangerZone] destroy failed:', err)
+      setDestroying(false)
+      setConfirmOpen(false)
+      setConfirmText('')
+      alert('销毁失败：' + (err instanceof Error ? err.message : String(err)))
+    }
+  }
+
+  return (
+    <>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+        销毁本地所有数据（包括全部项目、文件、翻译段、翻译记忆库、术语库、设置、布局、快照备份等），不可恢复。建议操作前先导出备份。
+      </Typography>
+      <Button
+        variant="outlined"
+        color="error"
+        size="small"
+        startIcon={<DeleteForeverIcon />}
+        onClick={() => setConfirmOpen(true)}
+      >
+        销毁本地所有数据
+      </Button>
+
+      <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'error.main' }}>
+          <WarningIcon color="error" />
+          确认销毁所有数据
+        </DialogTitle>
+        <DialogContent>
+          <Alert severity="error" sx={{ mb: 2 }}>
+            此操作将<strong>永久删除</strong>浏览器中本应用的所有本地数据，且<strong>不可恢复</strong>。
+          </Alert>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            将被清除的内容：
+          </Typography>
+          <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 2 }}>
+            • 所有项目、文件夹、文件、翻译段<br />
+            • 翻译记忆库（TM）、术语库（TB）<br />
+            • 机器翻译 / 词典 / AI 质检配置<br />
+            • 自动快照备份、自定义布局<br />
+            • 主题、外观偏好、WebDAV 同步配置
+          </Typography>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            如确认继续，请在下方输入 <strong>删除</strong> 二字：
+          </Typography>
+          <TextField
+            size="small"
+            fullWidth
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            placeholder="删除"
+            autoFocus
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => { setConfirmOpen(false); setConfirmText('') }} disabled={destroying}>
+            取消
+          </Button>
+          <Button
+            color="error"
+            variant="contained"
+            disabled={confirmText !== '删除' || destroying}
+            onClick={handleDestroy}
+            startIcon={destroying ? <CircularProgress size={16} color="inherit" /> : <DeleteForeverIcon />}
+          >
+            {destroying ? '销毁中…' : '确认销毁'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </>
   )
 }
 
@@ -3676,14 +3805,250 @@ function CloudSyncSettingsSection(): ReactElement {
       <Divider sx={{ my: 2 }} />
 
       <Stack direction="column" spacing={0.5}>
-        <Typography variant="body2" sx={{ fontWeight: 500 }}>
-          后续功能（P2 / P3 规划中）
+        <WebDavBackupSection />
+      </Stack>
+    </Box>
+  )
+}
+
+/** WebDAV 项目备份 / 恢复 / TM 同步操作区 */
+function WebDavBackupSection(): ReactElement {
+  const notify = useUIStore((s) => s.notify)
+  const currentProjectId = useProjectStore((s) => s.currentProjectId)
+  const connectionStatus = useSyncStore((s) => s.connectionStatus)
+
+  const [backupRange, setBackupRange] = useState<BackupRange>('all')
+  const [isBackingUp, setIsBackingUp] = useState(false)
+  const [isRestoring, setIsRestoring] = useState(false)
+  const [isSyncingTM, setIsSyncingTM] = useState(false)
+  const [isLoadingList, setIsLoadingList] = useState(false)
+  const [remoteBackups, setRemoteBackups] = useState<RemoteBackupEntry[]>([])
+  const [selectedBackup, setSelectedBackup] = useState<string>('')
+  const [restoreStrategy, setRestoreStrategy] = useState<ImportStrategy>('merge')
+
+  // 连接未成功时禁用所有操作
+  const canOperate = connectionStatus === 'success' && !isBackingUp && !isRestoring && !isSyncingTM
+
+  const refreshList = async () => {
+    if (connectionStatus !== 'success') {
+      notify('warning', '请先测试连接成功后再操作')
+      return
+    }
+    setIsLoadingList(true)
+    try {
+      const res = await listRemoteBackups()
+      if (res.ok) {
+        setRemoteBackups(res.entries)
+        // 默认选中最新的一条项目备份
+        const latestProject = res.entries.find((e) => e.kind === 'project')
+        if (latestProject && !selectedBackup) {
+          setSelectedBackup(latestProject.name)
+        }
+        notify('info', res.message)
+      } else {
+        notify('error', res.message)
+        setRemoteBackups([])
+      }
+    } catch (e) {
+      notify('error', `拉取备份列表失败：${(e as Error).message}`)
+    } finally {
+      setIsLoadingList(false)
+    }
+  }
+
+  const onBackup = async () => {
+    if (!canOperate) return
+    setIsBackingUp(true)
+    try {
+      const res = await uploadProjectBackup({
+        range: backupRange,
+        currentProjectId,
+        compress: true,
+      })
+      if (res.ok) {
+        notify('success', res.message)
+        // 备份后自动刷新列表
+        await refreshList()
+      } else {
+        notify('error', res.message)
+      }
+    } catch (e) {
+      notify('error', `备份失败：${(e as Error).message}`)
+    } finally {
+      setIsBackingUp(false)
+    }
+  }
+
+  const onRestore = async () => {
+    if (!canOperate) return
+    if (!selectedBackup) {
+      notify('warning', '请先在列表中选择要恢复的备份')
+      return
+    }
+    // merge 策略较安全；wipe 会清空本地数据，需二次确认
+    if (restoreStrategy === 'wipe') {
+      const confirmed = window.confirm(
+        `确定要以「覆盖」策略恢复吗？\n\n此操作将先清空本地所有项目数据，再从备份写入。\n备份文件：${selectedBackup}\n\n建议优先使用「合并」策略。`,
+      )
+      if (!confirmed) return
+    }
+    setIsRestoring(true)
+    try {
+      const res = await restoreProjectBackup({
+        remoteName: selectedBackup,
+        strategy: restoreStrategy,
+      })
+      if (res.ok && res.stats) {
+        const s = res.stats
+        notify('success', `${res.message}（项目 ${s.projects.added} 新增/${s.projects.overwritten} 覆盖，段 ${s.segments}，TM ${s.tmEntries.added} 新增/${s.tmEntries.skipped} 更新）`)
+      } else {
+        notify('error', res.message)
+      }
+    } catch (e) {
+      notify('error', `恢复失败：${(e as Error).message}`)
+    } finally {
+      setIsRestoring(false)
+    }
+  }
+
+  const onSyncTM = async () => {
+    if (!canOperate) return
+    setIsSyncingTM(true)
+    try {
+      const res = await syncTM({ upload: true, download: true })
+      if (res.ok) {
+        notify('success', res.message)
+      } else {
+        notify('error', res.message)
+      }
+    } catch (e) {
+      notify('error', `TM 同步失败：${(e as Error).message}`)
+    } finally {
+      setIsSyncingTM(false)
+    }
+  }
+
+  return (
+    <Box>
+      <Divider sx={{ my: 1.5 }} />
+      <Typography variant="body2" sx={{ fontWeight: 500, mb: 1 }}>
+        项目备份与恢复
+      </Typography>
+
+      {/* 备份区 */}
+      <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap', gap: 0.5, mb: 1 }}>
+        <FormControl size="small" sx={{ minWidth: 100 }}>
+          <Select
+            value={backupRange}
+            onChange={(e) => setBackupRange(e.target.value as BackupRange)}
+            displayEmpty
+          >
+            <MenuItem value="all">全部项目</MenuItem>
+            <MenuItem value="current">当前项目</MenuItem>
+          </Select>
+        </FormControl>
+        <Button
+          size="small"
+          variant="contained"
+          color="primary"
+          startIcon={isBackingUp ? <CircularProgress size={14} sx={{ color: 'inherit' }} /> : <UploadIcon />}
+          onClick={onBackup}
+          disabled={!canOperate}
+        >
+          {isBackingUp ? '备份中...' : '上传备份'}
+        </Button>
+        <Tooltip title="拉取远端备份列表">
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={isLoadingList ? <CircularProgress size={14} /> : <RefreshIcon />}
+            onClick={refreshList}
+            disabled={!canOperate || isLoadingList}
+          >
+            刷新列表
+          </Button>
+        </Tooltip>
+      </Stack>
+
+      {/* 远端备份列表 + 恢复区 */}
+      {remoteBackups.length > 0 ? (
+        <Box sx={{ mb: 1.5 }}>
+          <TextField
+            select
+            size="small"
+            fullWidth
+            label="选择远端备份"
+            value={selectedBackup}
+            onChange={(e) => setSelectedBackup(e.target.value)}
+            sx={{ mb: 0.75 }}
+          >
+            {remoteBackups.map((b) => (
+              <MenuItem key={b.href} value={b.name}>
+                <Stack direction="row" spacing={1} sx={{ alignItems: 'center', width: '100%' }}>
+                  <Typography variant="caption" sx={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {b.name}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {b.size != null ? formatBytesRemote(b.size) : ''}
+                    {b.compressed ? ' · gzip' : ''}
+                    {b.kind === 'tm' ? ' · TM' : b.kind === 'project' ? ' · 项目' : ''}
+                  </Typography>
+                </Stack>
+              </MenuItem>
+            ))}
+          </TextField>
+          <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap', gap: 0.5 }}>
+            <FormControl size="small" sx={{ minWidth: 90 }}>
+              <Select
+                value={restoreStrategy}
+                onChange={(e) => setRestoreStrategy(e.target.value as ImportStrategy)}
+              >
+                <MenuItem value="merge">合并</MenuItem>
+                <MenuItem value="append">追加</MenuItem>
+                <MenuItem value="wipe">覆盖</MenuItem>
+              </Select>
+            </FormControl>
+            <Button
+              size="small"
+              variant="contained"
+              color="success"
+              startIcon={isRestoring ? <CircularProgress size={14} sx={{ color: 'inherit' }} /> : <DownloadIcon />}
+              onClick={onRestore}
+              disabled={!canOperate || !selectedBackup}
+            >
+              {isRestoring ? '恢复中...' : '恢复到本地'}
+            </Button>
+          </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+            合并=按ID覆盖；追加=作为新项目导入；覆盖=先清空本地再写入
+          </Typography>
+        </Box>
+      ) : (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
+          暂无远端备份，点击「上传备份」创建第一份
         </Typography>
-        <ul style={{ margin: 0, paddingLeft: '1.25rem' }}>
-          <li><Typography variant="caption" color="text.secondary">项目文件手动/自动上传与下载（还原）</Typography></li>
-          <li><Typography variant="caption" color="text.secondary">翻译记忆库定时同步与合并</Typography></li>
-          <li><Typography variant="caption" color="text.secondary">100% 匹配自动填充译文</Typography></li>
-        </ul>
+      )}
+
+      <Divider sx={{ my: 1.5 }} />
+
+      {/* TM 同步区 */}
+      <Typography variant="body2" sx={{ fontWeight: 500, mb: 1 }}>
+        翻译记忆库同步
+      </Typography>
+      <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap', gap: 0.5 }}>
+        <Button
+          size="small"
+          variant="contained"
+          color="secondary"
+          startIcon={isSyncingTM ? <CircularProgress size={14} sx={{ color: 'inherit' }} /> : <SyncIcon />}
+          onClick={onSyncTM}
+          disabled={!canOperate}
+        >
+          {isSyncingTM ? '同步中...' : 'TM 双向同步'}
+        </Button>
+        <Typography variant="caption" color="text.secondary">
+          上传本地 TM + 合并远端最新 TM
+        </Typography>
       </Stack>
     </Box>
   )
@@ -4089,50 +4454,6 @@ function EmptyHint({ text }: { text: string }): ReactElement {
         {text}
       </Typography>
     </Box>
-  )
-}
-
-/** 通用代码 → 显示名 映射（用于下拉选项展示） */
-const LANG_CODE_LABEL: Record<string, string> = Object.fromEntries(
-  COMMON_LANGUAGES.map((o) => [o.code, o.label]),
-)
-
-/**
- * 语言选择 Autocomplete：支持从常用语言下拉选择，也支持自由输入自定义代码。
- * 输入框显示语言代码（如 en / zh-CN），下拉项显示「代码 + 中文名」。
- */
-function LangAutocomplete({
-  label, value, onChange, placeholder,
-}: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  placeholder?: string
-}): ReactElement {
-  return (
-    <Autocomplete
-      size="small"
-      freeSolo
-      options={COMMON_LANGUAGES.map((o) => o.code)}
-      value={value}
-      onChange={(_, v) => onChange(typeof v === 'string' ? v : (v ?? ''))}
-      onInputChange={(_, v, reason) => {
-        // freeSolo 下用户清空或手动输入时同步
-        if (reason === 'input' || reason === 'clear') onChange(v ?? '')
-      }}
-      renderOption={(props, code) => (
-        <li {...props}>
-          <Typography component="span" variant="body2" sx={{ fontFamily: 'monospace', minWidth: 56 }}>{code}</Typography>
-          <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
-            {LANG_CODE_LABEL[code] ?? ''}
-          </Typography>
-        </li>
-      )}
-      renderInput={(params) => (
-        <TextField {...params} label={label} placeholder={placeholder} />
-      )}
-      sx={{ flex: '1 1 120px', minWidth: 120 }}
-    />
   )
 }
 

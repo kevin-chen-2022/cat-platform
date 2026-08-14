@@ -7,7 +7,6 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import AutoAwesomeMotionIcon from '@mui/icons-material/AutoAwesomeMotion'
 import ScienceIcon from '@mui/icons-material/Science'
 import FolderIcon from '@mui/icons-material/Folder'
-import SettingsIcon from '@mui/icons-material/Settings'
 import MenuBookIcon from '@mui/icons-material/MenuBook'
 import type { ReactElement } from 'react'
 import {
@@ -16,7 +15,6 @@ import {
   TBPanel,
   MTPanel,
   ProjectPanel,
-  SettingsPanel,
   DictPanel,
   AIQAPanel,
   AITranslatePanel,
@@ -38,7 +36,6 @@ const TABS: TabItem[] = [
   { key: 'aitranslate', label: 'AI翻', icon: <ScienceIcon fontSize="small" />, render: () => <AITranslatePanel /> },
   { key: 'aiqa', label: 'AI', icon: <AutoAwesomeMotionIcon fontSize="small" />, render: () => <AIQAPanel /> },
   { key: 'project', label: '项目', icon: <FolderIcon fontSize="small" />, render: () => <ProjectPanel /> },
-  { key: 'settings', label: '设置', icon: <SettingsIcon fontSize="small" />, render: () => <SettingsPanel /> },
 ]
 
 export function MobileTabLayout(): ReactElement {

@@ -68,6 +68,32 @@ export const SETTINGS_KEYS = {
   BACKUP_LAST_FULL_DOWNLOAD_AT: 'backup.lastFullDownloadAt',
 } as const
 
+/**
+ * TM 条目 upsert：按 v8 新唯一键 [source+sourceLang+targetLang+projectId] 查询
+ * 已存在 → 覆盖 target + updatedAt；不存在 → 新增
+ * 返回 'added' | 'updated'，用于导入统计
+ */
+async function upsertTMRow(db: any, row: TMEntry): Promise<'added' | 'updated'> {
+  const pid = (row.projectId as number | undefined) ?? undefined
+  const existing = await db.tmEntries
+    .where('[source+sourceLang+targetLang+projectId]')
+    .equals([row.source, row.sourceLang, row.targetLang, pid])
+    .first()
+  if (existing) {
+    await db.tmEntries.update(existing.id as number, {
+      target: row.target,
+      updatedAt: row.updatedAt ?? Date.now(),
+      meta: row.meta ?? existing.meta,
+      usageCount: (existing.usageCount ?? 0) + 1,
+      lastUsedAt: row.updatedAt ?? Date.now(),
+    })
+    return 'updated'
+  }
+  const { id: _id, ...rest } = row
+  await db.tmEntries.add(rest as TMEntry)
+  return 'added'
+}
+
 /* =========================
  * 项目级 导入/导出
  * ========================= */
@@ -246,22 +272,12 @@ async function executeAppendImport(
     updatedAt: now,
   }))
   if (tmRows.length > 0) {
-    try {
-      const before = await db.tmEntries.count()
-      await db.tmEntries.bulkPut(tmRows)
-      const after = await db.tmEntries.count()
-      tmAdded = after - before
-      tmSkipped = Math.max(0, tmRows.length - (after - before))
-    } catch {
-      for (const row of tmRows) {
-        try {
-          const before = await db.tmEntries.count()
-          await db.tmEntries.put(row)
-          const after = await db.tmEntries.count()
-          if (after > before) tmAdded++
-          else tmSkipped++
-        } catch { tmSkipped++ }
-      }
+    for (const row of tmRows) {
+      try {
+        const r = await upsertTMRow(db, row)
+        if (r === 'added') tmAdded++
+        else tmSkipped++ // updated 不算新增，计入 skipped（与旧逻辑的"总数 - 新增"= skipped 对齐）
+      } catch { tmSkipped++ }
     }
   }
   if (tbRows.length > 0) {
@@ -376,30 +392,19 @@ export async function importAllData(
         stats.segments = bundle.segments.length
       }
 
-      // === TM / TB：因为有复合唯一索引，bulkPut 对重复键会以新的覆盖（符合 merge 语义）===
+      // === TM：按 v8 新规则 [source+sourceLang+targetLang+projectId] 同原文覆盖旧译文
       if (bundle.tmEntries?.length) {
-        try {
-          const before = await db.tmEntries.count()
-          await db.tmEntries.bulkPut(bundle.tmEntries as any[])
-          const after = await db.tmEntries.count()
-          stats.tmEntries.added = after - before
-          stats.tmEntries.skipped = Math.max(0, bundle.tmEntries.length - (after - before))
-        } catch {
-          // 兼容 bulk 失败：fallback 单条 put
-          let added = 0
-          let skipped = 0
-          for (const row of bundle.tmEntries) {
-            try {
-              const before = await db.tmEntries.count()
-              await db.tmEntries.put(row as any)
-              const after = await db.tmEntries.count()
-              if (after > before) added++
-              else skipped++
-            } catch { skipped++ }
-          }
-          stats.tmEntries.added = added
-          stats.tmEntries.skipped = skipped
+        let added = 0
+        let skipped = 0
+        for (const row of bundle.tmEntries) {
+          try {
+            const r = await upsertTMRow(db, row as TMEntry)
+            if (r === 'added') added++
+            else skipped++
+          } catch { skipped++ }
         }
+        stats.tmEntries.added = added
+        stats.tmEntries.skipped = skipped
       }
       if (bundle.tbEntries?.length) {
         try {
@@ -587,6 +592,8 @@ const LS_KEYS = [
   'cat.mtSettings',
   'cat.dictionarySettings',
   'cat.terms',
+  'cat.syncSettings',
+  'cat.collabSettings',
 ] as const
 
 export interface CATUserSettingsBundle {

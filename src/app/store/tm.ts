@@ -66,8 +66,9 @@ export const useTMStore = create<TMStoreState>((set, get) => ({
       let rows: TMEntry[] = []
       const scope = get().scope
       if (scope === 'project' && projectId != null) {
-        // 当前项目：projectId 匹配的条目
-        rows = await db.tmEntries.where('projectId').equals(projectId as number).toArray()
+        // 项目范围:本项目专用条目 + 全局共享条目(projectId 为 null/undefined,协同翻译收到的译文)
+        const all = await db.tmEntries.toArray()
+        rows = all.filter((e) => e.projectId == null || e.projectId === projectId)
       } else if (scope === 'global') {
         // 全局：projectId 为 null/undefined 的条目（跨项目共享）
         const all = await db.tmEntries.toArray()
@@ -95,14 +96,37 @@ export const useTMStore = create<TMStoreState>((set, get) => ({
       updatedAt: now,
     }
     try {
+      // 先按 v8 新复合键查：同[source+sourceLang+targetLang+projectId] → 覆盖 target
+      const existing = await db.tmEntries
+        .where('[source+sourceLang+targetLang+projectId]')
+        .equals([
+          newEntry.source,
+          newEntry.sourceLang,
+          newEntry.targetLang,
+          (newEntry.projectId as number | undefined) ?? undefined,
+        ] as any)
+        .first()
+      if (existing) {
+        await db.tmEntries.update(existing.id as number, {
+          target: newEntry.target,
+          updatedAt: now,
+          meta: newEntry.meta ?? existing.meta,
+          usageCount: (existing.usageCount ?? 0) + 1,
+          lastUsedAt: now,
+        })
+        const refreshed = { ...existing, target: newEntry.target, updatedAt: now }
+        set({
+          entries: get().entries.map((e) => (e.id === refreshed.id ? { ...e, ...refreshed } : e)),
+        })
+        return refreshed
+      }
       const id = await db.tmEntries.add(newEntry)
-      // 重新加载以保持数据一致
       const added = { ...newEntry, id: id as number }
       set({ entries: [...get().entries, added] })
       return added
     } catch (err) {
-      // 复合唯一索引冲突（source+target+sourceLang+targetLang 重复）
-      console.error('[useTMStore:addEntry] 可能是重复条目', err)
+      // 其他异常（非唯一键冲突）记日志，避免静默吞
+      console.warn('[useTMStore:addEntry] 写入失败:', err)
       return null
     }
   },
@@ -113,14 +137,15 @@ export const useTMStore = create<TMStoreState>((set, get) => ({
     let skipped = 0
     let updated = 0
     const now = Date.now()
-    // 先构建 DB 中已存在的映射，便于快速判定（按复合索引）
+    const pid = (projectId as number | undefined) ?? undefined
+    // 按 v8 新复合键 [source+sourceLang+targetLang+projectId] 构建 existingKey 映射
     const existingKey = new Map<string, TMEntry>()
     try {
       const all = await db.tmEntries.toArray()
       for (const e of all) {
-        if (e.sourceLang === sourceLang && e.targetLang === targetLang) {
-          const k = `${e.source.trim()}__SEP__${e.target.trim()}`
-          existingKey.set(k.toLowerCase(), e)
+        if (e.sourceLang === sourceLang && e.targetLang === targetLang && String(e.projectId ?? '__GLOBAL__') === String(pid ?? '__GLOBAL__')) {
+          const k = e.source.trim().toLowerCase()
+          existingKey.set(k, e)
         }
       }
     } catch { /* ignore */ }
@@ -130,11 +155,15 @@ export const useTMStore = create<TMStoreState>((set, get) => ({
       const s = p.source.trim()
       const t = p.target.trim()
       if (!s || !t) { skipped++; continue }
-      const k = `${s}__SEP__${t}`.toLowerCase()
+      const k = s.toLowerCase()
       const found = existingKey.get(k)
       if (found) {
         if (mode === 'overwrite') {
-          toUpdate.push({ id: found.id as number, patch: { updatedAt: now, projectId: found.projectId ?? projectId } })
+          // overwrite 模式：覆盖 target + updatedAt（核心新规则：同原文覆盖旧译文）
+          toUpdate.push({
+            id: found.id as number,
+            patch: { target: t, updatedAt: now, projectId: found.projectId ?? pid },
+          })
           updated++
         } else {
           skipped++
@@ -146,7 +175,7 @@ export const useTMStore = create<TMStoreState>((set, get) => ({
         target: t,
         sourceLang,
         targetLang,
-        projectId,
+        projectId: pid,
         createdAt: now,
         updatedAt: now,
         usageCount: 0,
@@ -159,16 +188,25 @@ export const useTMStore = create<TMStoreState>((set, get) => ({
         const ids = await db.tmEntries.bulkAdd(toAdd, { allKeys: true }) as number[]
         added = ids.filter((x) => x != null).length
       } catch {
-        // bulkAdd 若全部冲突则会失败，降级为逐条写入
+        // bulkAdd 若全部冲突则会失败，降级为"先查再更新/新增"，确保同原文覆盖旧译文
         for (const e of toAdd) {
           try {
-            await db.tmEntries.add(e)
-            added++
+            const cur = await db.tmEntries
+              .where('[source+sourceLang+targetLang+projectId]')
+              .equals([e.source, e.sourceLang, e.targetLang, e.projectId ?? undefined] as any)
+              .first()
+            if (cur) {
+              await db.tmEntries.update(cur.id as number, { target: e.target, updatedAt: now })
+              updated++
+            } else {
+              await db.tmEntries.add(e)
+              added++
+            }
           } catch { skipped++ }
         }
       }
     }
-    // 批量更新（覆写模式）
+    // 批量更新（覆写模式 / 降级写入时的 update）
     if (toUpdate.length > 0) {
       for (const u of toUpdate) {
         try { await db.tmEntries.update(u.id, u.patch) } catch { /* ignore */ }

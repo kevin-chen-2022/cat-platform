@@ -176,7 +176,7 @@ const USAGE_SECTIONS: Array<{
           { name: 'QA 质检', desc: '自动检测翻译质量问题。规则质检覆盖术语一致性、数字/标签丢失、空译文、重复译文、长度比例异常；AI 质检可启用大模型深度检查（可自定义提示词，显示 token 用量）。支持跟随模式（切换段自动质检当前段）、全文件批量质检、根据质检结果自动标注段状态、结果按段分组并一键跳转。' },
           { name: '项目词典库', desc: '项目级术语库管理，独立于全局术语库，随项目导入导出。' },
           { name: '项目记忆库', desc: '项目级翻译记忆库管理，独立于全局记忆库，随项目导入导出。' },
-          { name: '设置', desc: '配置 AI 接口、机器翻译 API、词典源、字体字号、深浅主题、显示选项等。支持设置导入导出。' },
+          { name: '设置', desc: '配置 AI 接口、机器翻译 API、词典源、字体字号、深浅主题、显示选项等。支持设置导入导出。入口：顶部工具栏「维护」菜单中的「设置」项（全屏弹窗）。' },
         ].map((item) => (
           <Box key={item.name} sx={{ mb: 1.5 }}>
             <Typography variant="body2" component="span" sx={{ fontWeight: 600, color: 'primary.main' }}>
@@ -452,7 +452,7 @@ const USAGE_SECTIONS: Array<{
         <Box sx={{ mb: 2 }}>
           <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>字体设置</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
-            在「设置」卡片的「基本设置」中可调整字体和字号，作用于所有功能卡片的内容显示区域。
+            在「设置」（顶部工具栏「维护」菜单 → 设置）的「基本设置」中可调整字体和字号，作用于所有功能卡片的内容显示区域。
           </Typography>
         </Box>
         <Box sx={{ mb: 2 }}>
@@ -473,19 +473,19 @@ const USAGE_SECTIONS: Array<{
         <Box sx={{ mb: 2 }}>
           <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>AI 翻译 / AI 问答</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
-            在「设置」卡片中配置 AI 服务商（支持 DeepSeek、豆包、通义千问、智谱），填入 API Key、Base URL 和模型名称。可自定义翻译系统 Prompt 和问答系统 Prompt。翻译时可开启「术语套用」自动注入匹配术语。
+            在「设置」（顶部工具栏「维护」菜单 → 设置）中配置 AI 服务商（支持 DeepSeek、豆包、通义千问、智谱），填入 API Key、Base URL 和模型名称。可自定义翻译系统 Prompt 和问答系统 Prompt。翻译时可开启「术语套用」自动注入匹配术语。
           </Typography>
         </Box>
         <Box sx={{ mb: 2 }}>
           <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>机器翻译</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
-            机器翻译支持网页模式（百度、有道、QQ、阿里巴巴、搜狗、爱词霸）和 API 模式（百度翻译 API、彩云小译 API）。在「设置」中切换模式并配置相应的密钥。机器翻译面板提供源/目标语言选择，默认读取当前项目的语言对，可临时手动调整或点击切换按钮交换语言对，仅影响当前翻译，不修改项目设置。
+            机器翻译支持网页模式（百度、有道、QQ、阿里巴巴、搜狗、爱词霸）和 API 模式（百度翻译 API、彩云小译 API）。在「设置」（顶部工具栏「维护」菜单 → 设置）中切换模式并配置相应的密钥。机器翻译面板提供源/目标语言选择，默认读取当前项目的语言对，可临时手动调整或点击切换按钮交换语言对，仅影响当前翻译，不修改项目设置。
           </Typography>
         </Box>
         <Box sx={{ mb: 2 }}>
           <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>词典查询</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
-            支持在线词典（必应、有道、欧路）和本地词典，可在「设置」中配置。
+            支持在线词典（必应、有道、欧路）和本地词典，可在「设置」（顶部工具栏「维护」菜单 → 设置）中配置。
           </Typography>
         </Box>
       </Box>
@@ -506,13 +506,92 @@ const USAGE_SECTIONS: Array<{
         <Box sx={{ mb: 2 }}>
           <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>用户设置导出/导入</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
-            「项目 → 导出用户设置…」可下载 .cat-settings.json，包含主题、字体、AI 配置、MT 配置、词典设置、术语库、自定义布局等本地偏好。通过「导入用户设置…」可恢复到另一台设备。
+            「项目 → 导出用户设置…」可下载 .cat-settings.json，包含主题、字体、AI 配置、MT 配置、词典设置、术语库、自定义布局、WebDAV 云同步配置、网络协同翻译配置等本地偏好。通过「导入用户设置…」可恢复到另一台设备。
           </Typography>
         </Box>
         <Box sx={{ mb: 2 }}>
           <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>自动快照</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
-            系统会按设定间隔自动创建本地快照（存储在 IndexedDB），在意外关闭时可恢复数据。可在「设置」中配置快照间隔和保留份数。
+            系统会按设定间隔自动创建本地快照（存储在 IndexedDB），在意外关闭时可恢复数据。可在「设置」（顶部工具栏「维护」菜单 → 设置）中配置快照间隔和保留份数。
+          </Typography>
+        </Box>
+      </Box>
+    ),
+  },
+  {
+    id: 'cloud-sync',
+    title: '云端同步（WebDAV）',
+    summary: '通过 WebDAV 备份/恢复项目数据、同步翻译记忆库',
+    render: () => (
+      <Box>
+        <Typography variant="body2" component="div" sx={{ mb: 2 }}>
+          云端同步基于 WebDAV 协议，将本地项目数据和翻译记忆库备份到网盘（如坚果云、Nextcloud、ownCloud），并在其他设备上恢复，实现跨设备协作与数据安全。
+        </Typography>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>配置连接</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            在「设置」（顶部工具栏「维护」菜单 → 云端同步）中填写 WebDAV 服务商（预设坚果云/Nextcloud/ownCloud）、URL、用户名和密码。坚果云需使用「应用密码」（非账号登录密码），在坚果云官网「安全选项 → 第三方应用管理」中生成。填写后点击「测试连接」验证。
+          </Typography>
+        </Box>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>项目备份与恢复</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            连接成功后，可选择「全部项目」或「当前项目」一键上传备份（自动 gzip 压缩，远端存放于 <code>cat-platform/</code> 目录下，文件名含时间戳）。点击「刷新列表」可拉取远端备份，选中后选择恢复策略：<br/>
+            • <strong>合并</strong>：按 ID 覆盖同名数据，最常用、最安全；<br/>
+            • <strong>追加</strong>：作为新项目导入，不覆盖已有数据；<br/>
+            • <strong>覆盖</strong>：先清空本地全部数据再写入（危险，需二次确认）。
+          </Typography>
+        </Box>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>翻译记忆库（TM）同步</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            点击「TM 双向同步」会同时执行：上传本地全部 TM 条目到远端，并拉取远端最新 TM 合并到本地（按唯一键 upsert，不产生重复）。便于多台设备共享翻译记忆积累。
+          </Typography>
+        </Box>
+        <Box sx={{ p: 1, borderRadius: 1, bgcolor: 'action.hover' }}>
+          <Typography variant="caption" color="text.secondary">
+            提示：浏览器直接访问 WebDAV 存在 CORS 跨域限制（坚果云等不支持跨域）。网页中点击「测试连接」可能失败，但使用 Tauri 打包后的桌面程序可绕过此限制正常通信。建议在桌面版中使用云端同步功能。
+          </Typography>
+        </Box>
+      </Box>
+    ),
+  },
+  {
+    id: 'collab',
+    title: '网络协同翻译',
+    summary: '多人实时协作：段锁定、译文共享、即时聊天',
+    render: () => (
+      <Box>
+        <Typography variant="body2" component="div" sx={{ mb: 2 }}>
+          网络协同翻译基于 GoEasy 实时消息服务，支持多名译员同时翻译同一项目，实时查看彼此的编辑状态、共享译文并即时沟通。
+        </Typography>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>配置与启动</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            在「设置」（顶部工具栏「协同」菜单 → 网络协同配置信息，或「维护」菜单 → 设置 → 网络协同翻译）中填写 GoEasy AppKey、频道名和译员昵称。配置后点击顶部工具栏「协同」按钮即可启动（或停止）。启动后会自动打开协同面板。
+          </Typography>
+        </Box>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>段锁定</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            当某译员正在编辑某段落时，该段会自动对其余人锁定，避免重复翻译。锁定状态在协同面板的「协同消息」视图中实时展示。
+          </Typography>
+        </Box>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>团队译文共享</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            译员提交译文后会自动同步到团队译文记忆库（独立于本地 TM）。在双语编辑器原文行点击「团队译文」按钮可查看其他译员对该原文的译文，一键采纳。也可在协同面板切换到「团队译文」视图浏览全部共享译文。
+          </Typography>
+        </Box>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>即时聊天与 @提及</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ pl: 2, mt: 0.5 }}>
+            协同面板底部提供聊天框，可发送文字消息。点击在线译员头像可快速追加 <code>@昵称</code> 到聊天框，实现轻量提醒。
+          </Typography>
+        </Box>
+        <Box sx={{ p: 1, borderRadius: 1, bgcolor: 'action.hover' }}>
+          <Typography variant="caption" color="text.secondary">
+            提示：GoEasy 免费版有日活量（DAU）限制，用量详情需在 GoEasy 后台查看。多人协作时建议约定统一的频道名。
           </Typography>
         </Box>
       </Box>

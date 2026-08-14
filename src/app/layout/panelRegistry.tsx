@@ -5,13 +5,13 @@ import BookmarkIcon from '@mui/icons-material/Bookmark'
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import AssessmentIcon from '@mui/icons-material/Assessment'
 import FolderIcon from '@mui/icons-material/Folder'
-import SettingsIcon from '@mui/icons-material/Settings'
 import PreviewIcon from '@mui/icons-material/Preview'
 import MenuBookIcon from '@mui/icons-material/MenuBook'
 import AutoAwesomeMotionIcon from '@mui/icons-material/AutoAwesomeMotion'
 import ScienceIcon from '@mui/icons-material/Science'
 import MemoryIcon from '@mui/icons-material/Memory'
 import ManageSearchIcon from '@mui/icons-material/ManageSearch'
+import HubIcon from '@mui/icons-material/Hub'
 import {
   EditorPanel,
   TMPanel,
@@ -19,7 +19,6 @@ import {
   MTPanel,
   QAPanel,
   ProjectPanel,
-  SettingsPanel,
   DictPanel,
   AIQAPanel,
   AITranslatePanel,
@@ -28,6 +27,7 @@ import {
   FragmentSearchPanel,
 } from './Panels'
 import { PreviewPanel } from '@/features/preview/components/PreviewPanel'
+import { CollabPanel } from '@/features/collab/components/CollabPanel'
 
 export interface PanelDef {
   id: string
@@ -47,10 +47,10 @@ export const PANEL_REGISTRY: PanelDef[] = [
   { id: 'aiqa', title: 'AI问答', icon: <AutoAwesomeMotionIcon fontSize="small" />, render: () => <AIQAPanel /> },
   { id: 'qa', title: 'QA 质检', icon: <AssessmentIcon fontSize="small" />, render: () => <QAPanel /> },
   { id: 'preview', title: '全文预览', icon: <PreviewIcon fontSize="small" />, render: () => <PreviewPanel /> },
-  { id: 'settings', title: '设置', icon: <SettingsIcon fontSize="small" />, render: () => <SettingsPanel /> },
   { id: 'projectDictionary', title: '项目词典库', icon: <BookmarkIcon fontSize="small" />, render: () => <ProjectDictionaryLibraryPanel /> },
   { id: 'projectMemory', title: '项目记忆库', icon: <MemoryIcon fontSize="small" />, render: () => <ProjectMemoryLibraryPanel /> },
   { id: 'fragmentSearch', title: '片段搜索', icon: <ManageSearchIcon fontSize="small" />, render: () => <FragmentSearchPanel /> },
+  { id: 'collab', title: '协同翻译', icon: <HubIcon fontSize="small" />, render: () => <CollabPanel /> },
 ]
 
 export const PANEL_MAP: Record<string, PanelDef> = Object.fromEntries(

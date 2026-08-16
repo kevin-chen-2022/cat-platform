@@ -35,6 +35,11 @@ body {
   display: none !important;
 }
 
+/* 边框隐藏：仅隐藏 panel 边框（极简模式的子项，可独立开关） */
+.cat-border-hidden .dock-panel {
+  border: none !important;
+}
+
 /* 极简模式（禅模式）：隐藏所有 panel 边框、tab 栏、分隔条、面板头尾，只保留内容区 */
 /* 通过 rc-dock 原生 CSS class 系统控制，再次点击复选框取消 class 即恢复正常显示 */
 .cat-zen-mode .dock-panel {

@@ -27,7 +27,10 @@ interface LayoutState {
   headersHidden: boolean
   tabBarVertical: boolean
   // 极简模式（禅模式）：隐藏所有 panel border、tab 栏、divider、panel-header/footer，只保留内容
+  // 作为"一键全开"：开启时自动勾选 borderHidden + headersHidden
   zenMode: boolean
+  // 边框隐藏：仅隐藏 panel 边框（极简模式的子项，可独立开关）
+  borderHidden: boolean
   // 启用自动贴边隐藏的 tab id 列表（未钉住状态）
   autoHideTabs: string[]
   workbenchMode: WorkbenchMode
@@ -40,6 +43,8 @@ interface LayoutState {
   toggleTabBarVertical: () => void
   toggleZenMode: () => void
   setZenMode: (on: boolean) => void
+  toggleBorderHidden: () => void
+  setBorderHidden: (hidden: boolean) => void
   toggleAutoHide: (tabId: string) => void
   isAutoHide: (tabId: string) => boolean
 
@@ -63,6 +68,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
   headersHidden: false,
   tabBarVertical: false,
   zenMode: false,
+  borderHidden: false,
   autoHideTabs: [],
   workbenchMode: 'translate',
 
@@ -73,11 +79,49 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
     const next = current.includes(id) ? current.filter((t) => t !== id) : [...current, id]
     set({ visibleTabs: next })
   },
-  toggleHeadersHidden: () => set((s) => ({ headersHidden: !s.headersHidden })),
-  setHeadersHidden: (hidden) => set({ headersHidden: hidden }),
+  toggleHeadersHidden: () => set((s) => {
+    const newHeadersHidden = !s.headersHidden
+    // 取消标题栏隐藏时，同步取消极简模式（极简模式要求标题栏也隐藏）
+    if (!newHeadersHidden && s.zenMode) {
+      return { headersHidden: newHeadersHidden, zenMode: false }
+    }
+    return { headersHidden: newHeadersHidden }
+  }),
+  setHeadersHidden: (hidden) => set((s) => {
+    if (!hidden && s.zenMode) {
+      return { headersHidden: hidden, zenMode: false }
+    }
+    return { headersHidden: hidden }
+  }),
   toggleTabBarVertical: () => set((s) => ({ tabBarVertical: !s.tabBarVertical })),
-  toggleZenMode: () => set((s) => ({ zenMode: !s.zenMode })),
-  setZenMode: (on) => set({ zenMode: on }),
+  // 极简模式作为"一键全开"：开启时自动勾选 borderHidden + headersHidden
+  toggleZenMode: () => set((s) => {
+    const newZenMode = !s.zenMode
+    return {
+      zenMode: newZenMode,
+      borderHidden: newZenMode ? true : s.borderHidden,
+      headersHidden: newZenMode ? true : s.headersHidden,
+    }
+  }),
+  setZenMode: (on) => set((s) => ({
+    zenMode: on,
+    borderHidden: on ? true : s.borderHidden,
+    headersHidden: on ? true : s.headersHidden,
+  })),
+  toggleBorderHidden: () => set((s) => {
+    const newBorderHidden = !s.borderHidden
+    // 取消边框隐藏时，同步取消极简模式（极简模式要求边框也隐藏）
+    if (!newBorderHidden && s.zenMode) {
+      return { borderHidden: newBorderHidden, zenMode: false }
+    }
+    return { borderHidden: newBorderHidden }
+  }),
+  setBorderHidden: (hidden) => set((s) => {
+    if (!hidden && s.zenMode) {
+      return { borderHidden: hidden, zenMode: false }
+    }
+    return { borderHidden: hidden }
+  }),
   toggleAutoHide: (tabId) => {
     const current = get().autoHideTabs
     const next = current.includes(tabId) ? current.filter((t) => t !== tabId) : [...current, tabId]

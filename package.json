@@ -29,6 +29,7 @@
     "docx-preview": "^0.4.0",
     "fflate": "^0.8.3",
     "goeasy": "^2.14.9",
+    "jsqr": "^1.4.0",
     "mammoth": "^1.12.0",
     "pdfjs-dist": "^4.10.38",
     "rc-dock": "^4.0.0-alpha.2",

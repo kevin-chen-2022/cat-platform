@@ -85,6 +85,8 @@ import BackupIcon from '@mui/icons-material/Backup'
 import RestorePageIcon from '@mui/icons-material/RestorePage'
 import DownloadIcon from '@mui/icons-material/Download'
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever'
+import DeleteSweepIcon from '@mui/icons-material/DeleteSweep'
+import SettingsBackupRestoreIcon from '@mui/icons-material/SettingsBackupRestore'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import HistoryIcon from '@mui/icons-material/History'
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive'
@@ -3111,69 +3113,166 @@ export function SettingsPanel({ embedded = false, initialSection = 'basic' }: { 
   )
 }
 
-/** 危险区域：销毁本地所有数据（IndexedDB + localStorage），清除后自动刷新重建空状态 */
+/** 危险区域操作模式 */
+type DestroyMode = 'all' | 'settings' | 'projects'
+
+const DESTROY_MODE_CONFIG: Record<DestroyMode, {
+  title: string
+  alert: string
+  items: string[]
+  confirmLabel: string
+  buttonLabel: string
+  buttonIcon: ReactElement
+  desc: string
+}> = {
+  settings: {
+    title: '确认清空用户设置',
+    alert: '此操作将清除所有偏好与配置（含 API Key、WebDAV 密码、协同 AppKey 等），但保留项目、文件、翻译段等数据。',
+    items: [
+      '机器翻译 / 词典 / AI 质检配置',
+      'WebDAV 云同步配置、网络协同翻译配置',
+      '主题、外观偏好、自定义布局',
+      '本地备份参数等默认设置',
+    ],
+    confirmLabel: '确认清空设置',
+    buttonLabel: '清空用户设置',
+    buttonIcon: <SettingsBackupRestoreIcon />,
+    desc: '清除所有偏好与配置（MT/词典/AI质检/WebDAV/协同翻译/主题/布局等），保留项目数据。',
+  },
+  projects: {
+    title: '确认清空所有项目',
+    alert: '此操作将删除全部项目数据（含 TM/TB/团队译文/快照），但保留用户设置与配置。',
+    items: [
+      '所有项目、文件夹、文件、翻译段',
+      '翻译记忆库（TM）、团队译文、术语库（TB）',
+      'AI 质检记录、自动快照备份',
+    ],
+    confirmLabel: '确认清空项目',
+    buttonLabel: '清空所有项目',
+    buttonIcon: <DeleteSweepIcon />,
+    desc: '删除全部项目数据（项目/文件/段/TM/TB/团队译文/快照等），保留用户设置与配置。',
+  },
+  all: {
+    title: '确认销毁所有数据',
+    alert: '此操作将永久删除浏览器中本应用的所有本地数据，且不可恢复。建议操作前先导出备份。',
+    items: [
+      '所有项目、文件夹、文件、翻译段',
+      '翻译记忆库（TM）、术语库（TB）',
+      '机器翻译 / 词典 / AI 质检配置',
+      '自动快照备份、自定义布局',
+      '主题、外观偏好',
+      'WebDAV 云同步配置、网络协同翻译配置',
+    ],
+    confirmLabel: '确认销毁',
+    buttonLabel: '销毁本地所有数据',
+    buttonIcon: <DeleteForeverIcon />,
+    desc: '销毁本地所有数据（项目+设置+快照全部清除），不可恢复。',
+  },
+}
+
+/** 危险区域：提供三种粒度的数据清除操作 */
 function DangerZoneSection(): ReactElement {
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [confirmText, setConfirmText] = useState('')
   const [destroying, setDestroying] = useState(false)
+  const [mode, setMode] = useState<DestroyMode>('all')
+
+  const cfg = DESTROY_MODE_CONFIG[mode]
+
+  const handleOpen = (m: DestroyMode) => {
+    setMode(m)
+    setConfirmText('')
+    setConfirmOpen(true)
+  }
 
   const handleDestroy = async () => {
     setDestroying(true)
     try {
-      // 1. 删除整个 IndexedDB 数据库（含所有表：项目、文件、段、TM、TB、设置、布局、快照等）
-      await db.delete()
-      // 2. 清除所有 cat.* 前缀的 localStorage（主题、外观、术语、MT/词典/AI质检/同步偏好）
-      const keysToRemove: string[] = []
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i)
-        if (k && k.startsWith('cat.')) keysToRemove.push(k)
+      if (mode === 'all' || mode === 'settings') {
+        // 清除所有 cat.* 前缀的 localStorage（主题、外观、MT/词典/AI质检/WebDAV/协同偏好）
+        const keysToRemove: string[] = []
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i)
+          if (k && k.startsWith('cat.')) keysToRemove.push(k)
+        }
+        keysToRemove.forEach((k) => localStorage.removeItem(k))
       }
-      keysToRemove.forEach((k) => localStorage.removeItem(k))
-      // 3. 重载页面：AppShell 初始化会调用 seedInitialData() 重建默认设置，确保空数据下正常启动
+
+      if (mode === 'all') {
+        // 删除整个 IndexedDB 数据库
+        await db.delete()
+      } else if (mode === 'settings') {
+        // 只清设置相关表，保留项目数据
+        await db.mtProviders.clear()
+        await db.settings.clear()
+        await db.layouts.clear()
+      } else {
+        // 清项目数据相关表，保留设置
+        await db.projects.clear()
+        await db.files.clear()
+        await db.folders.clear()
+        await db.segments.clear()
+        await db.tmEntries.clear()
+        await db.teamTMEntries.clear()
+        await db.tbEntries.clear()
+        await db.qaIssues.clear()
+        await db.backupSnapshots.clear()
+      }
+
+      // 重载页面：AppShell 初始化会调用 seedInitialData() 重建默认设置
       window.location.reload()
     } catch (err) {
       console.error('[DangerZone] destroy failed:', err)
       setDestroying(false)
       setConfirmOpen(false)
       setConfirmText('')
-      alert('销毁失败：' + (err instanceof Error ? err.message : String(err)))
+      alert('操作失败：' + (err instanceof Error ? err.message : String(err)))
     }
   }
 
   return (
     <>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-        销毁本地所有数据（包括全部项目、文件、翻译段、翻译记忆库、术语库、设置、布局、快照备份等），不可恢复。建议操作前先导出备份。
-      </Typography>
-      <Button
-        variant="outlined"
-        color="error"
-        size="small"
-        startIcon={<DeleteForeverIcon />}
-        onClick={() => setConfirmOpen(true)}
-      >
-        销毁本地所有数据
-      </Button>
+      <Stack direction="column" spacing={2}>
+        {(['settings', 'projects', 'all'] as DestroyMode[]).map((m) => {
+          const c = DESTROY_MODE_CONFIG[m]
+          return (
+            <Box key={m}>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                {c.desc}
+              </Typography>
+              <Button
+                variant="outlined"
+                color="error"
+                size="small"
+                startIcon={c.buttonIcon}
+                onClick={() => handleOpen(m)}
+              >
+                {c.buttonLabel}
+              </Button>
+            </Box>
+          )
+        })}
+      </Stack>
 
       <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'error.main' }}>
           <WarningIcon color="error" />
-          确认销毁所有数据
+          {cfg.title}
         </DialogTitle>
         <DialogContent>
           <Alert severity="error" sx={{ mb: 2 }}>
-            此操作将<strong>永久删除</strong>浏览器中本应用的所有本地数据，且<strong>不可恢复</strong>。
+            {cfg.alert}
           </Alert>
           <Typography variant="body2" sx={{ mb: 1 }}>
             将被清除的内容：
           </Typography>
-          <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 2 }}>
-            • 所有项目、文件夹、文件、翻译段<br />
-            • 翻译记忆库（TM）、术语库（TB）<br />
-            • 机器翻译 / 词典 / AI 质检配置<br />
-            • 自动快照备份、自定义布局<br />
-            • 主题、外观偏好、WebDAV 同步配置
-          </Typography>
+          <Box sx={{ mb: 2 }}>
+            {cfg.items.map((item, i) => (
+              <Typography key={i} variant="caption" color="text.secondary" component="div">
+                • {item}
+              </Typography>
+            ))}
+          </Box>
           <Typography variant="body2" sx={{ mb: 1 }}>
             如确认继续，请在下方输入 <strong>删除</strong> 二字：
           </Typography>
@@ -3195,9 +3294,9 @@ function DangerZoneSection(): ReactElement {
             variant="contained"
             disabled={confirmText !== '删除' || destroying}
             onClick={handleDestroy}
-            startIcon={destroying ? <CircularProgress size={16} color="inherit" /> : <DeleteForeverIcon />}
+            startIcon={destroying ? <CircularProgress size={16} color="inherit" /> : cfg.buttonIcon}
           >
-            {destroying ? '销毁中…' : '确认销毁'}
+            {destroying ? '处理中…' : cfg.confirmLabel}
           </Button>
         </DialogActions>
       </Dialog>

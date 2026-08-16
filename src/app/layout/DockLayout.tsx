@@ -137,6 +137,7 @@ export function DockLayoutView(): ReactElement {
   const headersHidden = useLayoutStore((s) => s.headersHidden)
   const tabBarVertical = useLayoutStore((s) => s.tabBarVertical)
   const zenMode = useLayoutStore((s) => s.zenMode)
+  const borderHidden = useLayoutStore((s) => s.borderHidden)
   const autoHideTabs = useLayoutStore((s) => s.autoHideTabs)
   const workbenchMode = useLayoutStore((s) => s.workbenchMode)
   const dockRef = useRef<DockLayoutRef>(null)
@@ -417,6 +418,7 @@ export function DockLayoutView(): ReactElement {
       data-theme={theme}
       className={[
         headersHidden ? 'cat-headers-hidden' : undefined,
+        borderHidden ? 'cat-border-hidden' : undefined,
         zenMode ? 'cat-zen-mode' : undefined,
         immutableLayout ? 'cat-layout-immutable' : undefined,
       ].filter(Boolean).join(' ') || undefined}

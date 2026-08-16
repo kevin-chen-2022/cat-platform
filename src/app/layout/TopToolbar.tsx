@@ -274,6 +274,8 @@ export function TopToolbar(): ReactElement {
   const toggleTabBarVertical = useLayoutStore((s) => s.toggleTabBarVertical)
   const zenMode = useLayoutStore((s) => s.zenMode)
   const toggleZenMode = useLayoutStore((s) => s.toggleZenMode)
+  const borderHidden = useLayoutStore((s) => s.borderHidden)
+  const toggleBorderHidden = useLayoutStore((s) => s.toggleBorderHidden)
   const workbenchMode = useLayoutStore((s) => s.workbenchMode)
 
   // 协同翻译 store
@@ -1030,7 +1032,17 @@ export function TopToolbar(): ReactElement {
                 sx={{ p: 0 }}
               />
             </MuiListItemIcon>
-            <ListItemText primary="极简模式" secondary="隐藏边框与标题栏，仅保留内容" />
+            <ListItemText primary="极简模式" secondary="一键隐藏边框与标题栏" />
+          </MenuItem>
+          <MenuItem onClick={toggleBorderHidden} dense>
+            <MuiListItemIcon sx={{ minWidth: 28 }}>
+              <Checkbox
+                checked={borderHidden}
+                size="small"
+                sx={{ p: 0 }}
+              />
+            </MuiListItemIcon>
+            <ListItemText primary="边框隐藏" secondary="仅隐藏面板边框" />
           </MenuItem>
           <MenuItem onClick={toggleHeadersHidden} dense>
             <MuiListItemIcon sx={{ minWidth: 28 }}>

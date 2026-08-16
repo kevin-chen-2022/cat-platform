@@ -33,10 +33,12 @@ import DeleteIcon from '@mui/icons-material/Close'
 import HistoryIcon from '@mui/icons-material/History'
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown'
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep'
+import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner'
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useCollabStore } from '@/app/store/collab'
 import { useProjectStore } from '@/app/store'
 import { clearTeamTMEntries } from '@/services/tm/engine'
+import { AppKeyQrScanner } from './AppKeyQrScanner'
 
 export function CollabSettingsSection({
   expanded,
@@ -51,6 +53,9 @@ export function CollabSettingsSection({
   const activeProjectId = useProjectStore((s) => s.currentProjectId)
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? null
   const [showAppkey, setShowAppkey] = useState(false)
+  const [qrOpen, setQrOpen] = useState(false)
+  const [flashKey, setFlashKey] = useState<number>(0)   // 扫码填入后闪烁高亮 AppKey 输入框
+  const appkeyInputRef = useRef<HTMLInputElement | null>(null)
 
   // 最近频道(仅去重后的有效非空),独立 Menu 下拉显示
   const recentOptions = useMemo(
@@ -168,8 +173,15 @@ export function CollabSettingsSection({
             value={config.appkey}
             onChange={(e) => setConfig({ appkey: e.target.value })}
             placeholder="BC-xxxxx / BC2-xxxxx"
-            sx={inputRootSx}
+            sx={{
+              ...inputRootSx,
+              // 扫码填入后的闪烁高亮(避坑 6.2:先回调再关模态框,这里闪烁不会被焦点过渡干扰)
+              animation: flashKey > 0 ? 'appkeyFlash 1.2s ease 2' : undefined,
+            }}
             slotProps={{
+              htmlInput: {
+                ref: appkeyInputRef,
+              },
               input: {
                 startAdornment: (
                   <InputAdornment position="start">
@@ -178,10 +190,37 @@ export function CollabSettingsSection({
                 ),
                 endAdornment: (
                   <InputAdornment position="end" sx={{ gap: 0.25 }}>
+                    <Tooltip
+                      title={
+                        <Box>
+                          <Typography variant="caption" component="div">
+                            <b>扫码输入 AppKey</b>
+                          </Typography>
+                          <Typography variant="caption" component="div" sx={{ mt: 0.5 }}>
+                            打开摄像头扫描控制台二维码,本地解析,内容<b>不上传</b>,保护隐私。
+                          </Typography>
+                          <Typography variant="caption" component="div" sx={{ mt: 0.5, color: 'text.secondary' }}>
+                            仅 https:// 或 http://localhost 环境可用。
+                          </Typography>
+                        </Box>
+                      }
+                      placement="top"
+                      arrow
+                    >
+                      <IconButton
+                        size="small"
+                        onClick={() => {
+                          // 用户点击 = 用户手势,可用于 Safari video.play()
+                          setQrOpen(true)
+                        }}
+                        aria-label="扫描二维码输入 AppKey"
+                      >
+                        <QrCodeScannerIcon fontSize="small" color="primary" />
+                      </IconButton>
+                    </Tooltip>
                     <IconButton
                       size="small"
                       onClick={() => setShowAppkey((v) => !v)}
-                      edge="end"
                       aria-label={showAppkey ? '隐藏 AppKey' : '显示 AppKey'}
                     >
                       {showAppkey
@@ -210,6 +249,37 @@ export function CollabSettingsSection({
               inputLabel: { sx: inputLabelSx },
             }}
           />
+
+          {/* 扫码弹窗:避坑 6.1+6.2 — onResult 先写入 + 高亮 + focus,再由弹窗内部 stopStream 后关闭 */}
+          <AppKeyQrScanner
+            open={qrOpen}
+            onClose={() => setQrOpen(false)}
+            onResult={(appkey, raw) => {
+              // ① 保存值到 store(此为"先回调"的内容,执行时模态框仍开着,焦点过渡不会影响 focus)
+              setConfig({ appkey })
+              // ② 闪烁 2 次(1.2s × 2),给用户视觉反馈"已填入"
+              setFlashKey((k) => k + 1)
+              // ③ 同时显示明文,避免用户看不到填了什么
+              setShowAppkey(true)
+              // ④ 聚焦到输入框(模态框还在,DOM 焦点还没转移,避坑 6.2)
+              const inp = appkeyInputRef.current
+              if (inp) {
+                try { inp.focus() } catch { /* ignore */ }
+                try { inp.setSelectionRange(0, inp.value.length) } catch { /* ignore */ }
+              }
+              // ⑤ 关弹窗(最后一步 — 让 stopStream 在回调后执行)
+              setQrOpen(false)
+            }}
+          />
+
+          {/* 闪烁动画 */}
+          <style>{`
+            @keyframes appkeyFlash {
+              0%   { box-shadow: 0 0 0 0 rgba(25, 118, 210, 0.55);   border-radius: 4px; }
+              50%  { box-shadow: 0 0 0 6px rgba(25, 118, 210, 0);     border-radius: 4px; }
+              100% { box-shadow: 0 0 0 0 rgba(25, 118, 210, 0);       border-radius: 4px; }
+            }
+          `}</style>
 
           <TextField
             label="GoEasy Host"

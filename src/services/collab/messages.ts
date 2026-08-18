@@ -144,10 +144,34 @@ export type CollabMessage =
   | TMSyncMessage
   | ChatMessage
 
-/** 生成随机用户ID后缀 */
-export function makeUserId(): string {
-  const rand = Math.random().toString(36).slice(2, 10)
-  return `collab_user_${rand}`
+/**
+ * 客户端唯一 ID（持久化到 localStorage）
+ * GoEasy DAU 按 connect({id}) 计费：同一 id 一天内多次连接只算 1 个 DAU
+ * 必须用稳定 id，绝不能每次连接都随机生成（否则 DAU 暴涨）
+ */
+const CLIENT_ID_KEY = 'cat_collab_client_id_v1'
+
+export function ensureClientId(): string {
+  try {
+    let id = localStorage.getItem(CLIENT_ID_KEY) || ''
+    if (!id) {
+      // 优先使用 crypto.randomUUID，不支持时退化为手动 hex
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        id = crypto.randomUUID()
+      } else {
+        id = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+          const r = Math.floor(Math.random() * 16)
+          const v = c === 'x' ? r : (r & 0x3) | 0x8
+          return v.toString(16)
+        })
+      }
+      localStorage.setItem(CLIENT_ID_KEY, id)
+    }
+    return id
+  } catch {
+    // localStorage 异常时退化为内存随机 id（本次会话内稳定）
+    return `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  }
 }
 
 /** 生成频道名:cat_collab_{projectId} */

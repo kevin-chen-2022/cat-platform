@@ -1,4 +1,19 @@
-# Logs
+# ====== 依赖 ======
+node_modules
+.npm
+.yarn
+.pnpm-store
+
+# ====== 构建产物 / 缓存 ======
+dist
+dist-ssr
+build
+out
+.vite
+*.tsbuildinfo
+*.local
+
+# ====== 日志 ======
 logs
 *.log
 npm-debug.log*
@@ -7,26 +22,40 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
+# ====== 系统 / 编辑器临时文件 ======
 .vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+*.tmp
+*~
 
-# 备份文件与原始副本
+# ====== 备份文件与原始副本 ======
 *.bak
 *-原始.*
 *.备份.*
 
-# TypeScript 增量构建缓存
-*.tsbuildinfo
+# ====== 单文件 / 桌面导出产物（只保留构建逻辑，不保留产物；需要时重新构建） ======
+*-单文件.html
+*-standalone.html
+MANUAL-PUSH-README.txt
+MANUAL-GIT-PUSH.txt
+cat-platform-*.zip
+
+# ====== Tauri / 桌面端缓存 ======
+.tauri-temp
+src-tauri/target
+src-tauri/Cargo.lock
+src-tauri/gen
+
+# ====== 浏览器截图 / 临时截图缓存 ======
+screenshots
+*.png.tmp

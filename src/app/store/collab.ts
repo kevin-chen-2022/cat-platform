@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { ID } from '@/types'
 import {
-  makeUserId,
+  ensureClientId,
   makeChannelName,
   type CollabUser,
   type SegmentLock,
@@ -94,7 +94,7 @@ export interface CollabState {
   /** 当前项目ID(用于生成频道) */
   currentProjectId: ID | null
 
-  /** 我的用户ID(会话级,连网时生成) */
+  /** 我的用户ID(持久化到localStorage,同一浏览器/设备永远不变,避免DAU浪费) */
   myUserId: string
   /** 在线译员列表 */
   users: CollabUser[]
@@ -188,7 +188,7 @@ export const useCollabStore = create<CollabState>((set, get) => ({
       const rand = Math.random().toString(36).slice(2, 4).toUpperCase()
       nickname = `译员${rand}`
     }
-    const myUserId = makeUserId()
+    const myUserId = ensureClientId()
     // 频道优先级: 手动指定 > projectId 自动生成
     const manual = cfg.manualChannel?.trim()
     const channel = manual || makeChannelName(projectId)
